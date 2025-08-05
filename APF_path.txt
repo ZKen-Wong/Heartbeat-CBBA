@@ -1,0 +1,183 @@
+function [time,len,pos] = APF_path(start_pos, goal, obstacle_list, anime_switch)
+    close();
+    %% initial setting of time
+    dt = 0.1;
+    % T = 600;
+    % t = 0:dt:T;
+    % max_iter = length(t);
+    
+    %% AUV state initial
+    x = zeros(12,1);
+    x(1) = 0.1;   % 初始前向速度
+    x(7:9) = start_pos;  % 初始位置
+    x(12) = 0;    % 初始航向角 yaw
+    
+    %% target and obstacles
+    % goal = [500, 500, -50];
+    obstacles = vertcat(obstacle_list.pos);
+    obs_radius = vertcat(obstacle_list.radius);     % 障碍影响半径
+    d0 = 80;             % 排斥力生效距离
+    eta = 50;           % 排斥力系数
+    ksi = 1;             % 吸引力系数
+    
+    %% PID initial
+    yaw_kp = 10;
+    yaw_ki =0;
+    yaw_kd =10;
+    pid_controller('yaw', 0, 0, dt, yaw_kp, yaw_ki, yaw_kd, true);
+    pitch_kp = 70;
+    pitch_ki = 0;
+    pitch_kd = 70;
+    pid_controller('pitch', 0, 0, dt, pitch_kp, pitch_ki, pitch_kd, true);
+    
+    %% 初始化绘图
+    r = 2;
+    [X, Y, Z] = sphere(20);
+    if anime_switch
+        figure;
+        set(gcf,'unit','normalize','position',[0.55 0.3 0.35 0.35])
+        headingLine = plot3([0 0], [0 0], [0 0], 'k-', 'LineWidth', 2);  % 黑色朝向线
+        hold on; grid on; axis equal;
+        xlabel('X'); ylabel('Y'); zlabel('Z');
+        title('AUV APF Navigation with PID');
+    
+        % 绘制障碍物
+        for i = 1:size(obstacles,1)
+            surf(obs_radius(i)*X+obstacles(i,1), obs_radius(i)*Y+obstacles(i,2), obs_radius(i)*Z+obstacles(i,3),...
+                'FaceColor','r','EdgeColor','none','FaceAlpha',0.5);
+        end
+        
+        % 绘制目标点
+        goalPlot = surf(r*X+goal(1), r*Y+goal(2), r*Z+goal(3), 'FaceColor','g','EdgeColor','none');
+        
+        % 初始化AUV绘制
+        auvPlot = surf(2*r*X+x(7), 2*r*Y+x(8), 2*r*Z+x(9), 'FaceColor','b', 'EdgeColor','none');
+        aimplot = surf(r*X+x(7), r*Y+x(8), r*Z+x(9), 'FaceColor','r', 'EdgeColor','none');
+    end
+    
+    %% 仿真主循环
+    k = 1;
+    while true
+        pos = x(7:9)';
+        pitch = x(11);
+        yaw = x(12);
+    
+        %% 吸引力
+        F_att = ksi * (goal - pos) / norm(goal - pos);
+    
+        %% 排斥力
+        F_rep = [0, 0, 0];
+        for i = 1:size(obstacles,1)
+            obs = obstacles(i,:);
+            dis = pos - obs;
+            dis(3) = 3 * dis(3);
+            dist = norm(dis);
+            if dist < d0 && dist > 1e-3
+                F_rep = F_rep + eta * (1/dist - 1/d0) / dist * dis;
+            end
+        end
+    
+        %% 合力 + 限制z轴速度
+        F_total = F_att + F_rep;
+    
+        %% 转换为目标方向角
+        F_total = 30*F_total/norm(F_total);
+        target_yaw = atan2(F_total(2), F_total(1));
+        target_pitch = atan2(-F_total(3), norm(F_total(1:2)));  % z向下为正
+    
+        %% 控制器输出
+        if (abs(target_yaw - yaw) > pi)
+            target_yaw = target_yaw - sign(target_yaw) * 2*pi;
+        end
+        % if round(target_yaw) == round(yaw)
+        %     target_yaw = target_yaw + 0.5*pi;
+        % end
+        delta_r = -pid_controller('yaw', target_yaw, yaw, dt, yaw_kp, yaw_ki, yaw_kd);
+        delta_b = -pid_controller('pitch', target_pitch, pitch, dt, pitch_kp, pitch_ki, pitch_kd);
+        % 限幅
+        if (abs(delta_r) > 20)
+            delta_r = sign(delta_r)*20;
+        end
+        if (abs(delta_b) > 20)
+            delta_b = sign(delta_b)*20;
+        end
+    
+        %% rpm控制，终点减速，速度不足就加速
+        w = [1, 1, 0.5];  % xyz 方向的权重（z方向较轻）
+        dif = (pos - goal) .* sqrt(w); 
+        goal_dist = norm(dif);
+        if goal_dist < 20
+            v_scale = 0.5*(goal_dist/20)+0.5;  % 线性降速：从1.0降至0.5
+        else
+            if x(1) < 0.8
+                delta_r = 0;
+                delta_b = 0;
+            end
+            v_scale = 1;
+        end
+    
+        %% 输入组合
+        n = 1100;
+        ui(1) = delta_r;   % rudder
+        % ui(2) = delta_b;   % port and starboard stern plane
+        ui(3) = delta_b;   % top and bottom bow plane
+        ui(4) = -delta_b;  % port bow
+        ui(5) = -delta_b;  % starboard bow
+        ui(6) = v_scale * n;         % rpm
+    
+        %% 状态更新
+        xdot = auv(x, ui);
+        x = x + dt * xdot;
+        traj(k,:) = x(7:9)';
+    
+        %% 可视化更新
+        if mod(k,300) == 0 && anime_switch
+            % 打印输出
+            clc;
+            fprintf('target= %.2f\n',rad2deg(target_yaw));
+            fprintf('yaw= %.2f\n',rad2deg(yaw));
+            fprintf('rudder= %.2f\n',delta_r);
+            fprintf('plane= %.2f\n',delta_b);
+            fprintf('speed= %.2f\n', x(1));
+
+            % 朝向单位向量（以 body x 方向为基础）
+            dir_len = 10;  % 线段长度
+            dx = dir_len * cos(pitch) * cos(yaw);
+            dy = dir_len * cos(pitch) * sin(yaw);
+            dz = -dir_len * sin(pitch);  % z 轴向下为正
+            
+            % 起点和终点
+            p_start = pos;
+            p_end = pos + [dx, dy, dz];
+            
+            % 更新朝向线段
+            set(headingLine, 'XData', [p_start(1), p_end(1)], ...
+                             'YData', [p_start(2), p_end(2)], ...
+                             'ZData', [p_start(3), p_end(3)]);
+            % 更新auv，合力方向和轨迹
+            set(auvPlot,'XData',2*r*X+x(7),'YData',2*r*Y+x(8),'ZData',2*r*Z+x(9));
+            set(aimplot,'XData',r*X+x(7)+F_total(1),'YData',r*Y+x(8)+F_total(2),'ZData',r*Z+x(9)+F_total(3));
+            plot3(traj(1:k,1), traj(1:k,2), traj(1:k,3), 'b-', 'LineWidth', 2);
+            xlim([-50 550]);
+            ylim([-50 550]);
+            zlim([-80 50]);
+            drawnow;
+        end
+    
+        %% 判断是否到达目标
+        if goal_dist < 1
+            time = k*dt;
+            % disp(['到达目标，用时：', num2str(time), ' 秒']);
+            break;
+        end
+        k = k+1;
+    end
+    
+    %% 绘制轨迹
+    len = sum(sqrt(sum(diff(traj(1:k,:)).^2,2)));
+    if anime_switch
+        plot3(traj(1:k,1), traj(1:k,2), traj(1:k,3), 'b-', 'LineWidth', 2);
+        % legend('Headind','Obstale','Obstale','Goal','AUV','Force direction','Trajectory');
+        fprintf('轨迹长度：%.2f m\n', len);
+    end
+    end

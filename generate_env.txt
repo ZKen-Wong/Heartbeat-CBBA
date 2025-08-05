@@ -1,0 +1,75 @@
+function [task_list, obstacle_list] = generate_env(num_tasks, num_obs, num_auvs, seed, entry_exit_split)
+% 生成 AUV 环境，包括任务和障碍物信息
+% 输入：
+%   num_tasks         - 任务数量
+%   num_obs           - 障碍物数量
+%   num_auvs          - AUV数量（用于适应性配置）
+%   seed              - 随机种子（用于复现）
+%   entry_exit_split  - 出口入口是否分离（true/false）
+% 输出：
+%   task_list         - 任务结构体数组
+%   obstacle_list     - 障碍物结构体数组
+
+rng(seed);
+
+%% 区域定义
+xrange = [0, 500];
+yrange = [0, 500];
+zrange = [-80, 0];
+
+safe_radius = 80; % 出入口保护范围
+entry_exit_dist_range = [20, 50]; % 出入口间距
+
+%% 任务生成
+task_list = struct([]);
+for i = 1:num_tasks
+    % 出入口点
+    entry = [rand_range(xrange), rand_range(yrange), rand_range(zrange)];
+    if entry_exit_split
+        angle = rand()*2*pi;
+        dist = rand_range(entry_exit_dist_range);
+        offset = dist * [cos(angle), sin(angle), rand_range([-0.5, 0.5])];
+        exit = entry + offset;
+    else
+        exit = entry;
+    end
+
+    % 对每个AUV的任务价值和耗时
+    values = rand(1, num_auvs)*10;      % 任务价值 [0-10]
+    durations = randi([10, 60], 1, num_auvs);  % 耗时 10~60s
+    deadline = randi([1000, 3000]);
+
+    task_list(i).entry = entry;
+    task_list(i).exit = exit;
+    task_list(i).value = values;          % 1xN AUVs
+    task_list(i).duration = durations;    % 1xN AUVs
+    task_list(i).deadline = deadline;
+    task_list(i).id = i;
+end
+
+%% 障碍物生成
+obstacle_list = struct([]);
+count = 0;
+while count < num_obs
+    pos = [rand_range(xrange), rand_range(yrange), rand_range(zrange)];
+    safe = true;
+    for j = 1:num_tasks
+        d1 = norm(pos - task_list(j).entry);
+        d2 = norm(pos - task_list(j).exit);
+        if d1 < safe_radius || d2 < safe_radius
+            safe = false;
+            break;
+        end
+    end
+    if safe
+        count = count + 1;
+        obstacle_list(count).pos = pos;
+        obstacle_list(count).radius = 10; % 固定障碍物半径
+    end
+end
+end
+
+%% 辅助函数
+function val = rand_range(range)
+    val = range(1) + rand() * (range(2) - range(1));
+end
