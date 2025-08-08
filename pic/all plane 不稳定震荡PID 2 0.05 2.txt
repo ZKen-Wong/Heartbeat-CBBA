@@ -1,0 +1,12 @@
+=== 深度控制阶跃响应指标 ===
+Rising Time: 8.38 秒
+Overshoot:   0.00 %
+stabilization time: 111.78 秒
+steady state error: 0.00 m
+
+
+=== 深度控制阶跃响应指标 ===
+Rising Time: 114.83 秒
+Overshoot:   0.00 %
+stabilization time: NaN 秒
+steady state error: 0.36 m

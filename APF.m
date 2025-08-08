@@ -1,11 +1,12 @@
-function ui = APF(x, goal, obstacle_list, dt)
+function ui = APF(x, goal, obstacle_list, pid_vector)
 %% PID 由主程序来初始化
-yaw_kp = 2;
-yaw_ki =0;
-yaw_kd =0;
-pitch_kp = 10;
-pitch_ki = 0;
-pitch_kd = 0;
+yaw_kp = pid_vector(1);
+yaw_ki =pid_vector(2);
+yaw_kd =pid_vector(3);
+pitch_kp = pid_vector(4);
+pitch_ki = pid_vector(5);
+pitch_kd = pid_vector(6);
+dt = pid_vector(7);
 %% target and obstacles
 obstacles = vertcat(obstacle_list.pos);
 d0 = 80;             % 排斥力生效距离
@@ -48,11 +49,11 @@ end
 delta_r = -pid_controller('yaw_main', target_yaw, yaw, dt, yaw_kp, yaw_ki, yaw_kd);
 delta_b = -pid_controller('pitch_main', target_pitch, pitch, dt, pitch_kp, pitch_ki, pitch_kd);
 % 限幅
-if (abs(delta_r) > 20)
-    delta_r = sign(delta_r)*20;
+if (abs(delta_r) > 10*pi/180)
+    delta_r = sign(delta_r)*10*pi/180;
 end
 if (abs(delta_b) > 20)
-    delta_b = sign(delta_b)*20;
+    delta_b = sign(delta_b)*10*pi/180;
 end
 
 %% rpm控制，终点减速，速度不足就加速
@@ -72,7 +73,7 @@ end
 %% 输入组合
 n = 1100;
 ui(1) = delta_r;   % rudder
-% ui(2) = delta_b;   % port and starboard stern plane
+ui(2) = delta_b;   % port and starboard stern plane
 ui(3) = delta_b;   % top and bottom bow plane
 ui(4) = -delta_b;  % port bow
 ui(5) = -delta_b;  % starboard bow

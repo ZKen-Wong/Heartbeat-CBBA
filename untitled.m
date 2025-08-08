@@ -6,9 +6,9 @@ seed = 22;
 %% 初始化 生成环境
 dt = 0.1;
 count = 0;
-num_tasks = 24;
-num_obs = 20;
-num_auvs = 12;
+num_tasks = 8;
+num_obs = 200;
+num_auvs = 1;
 entry_exit_split = 0;
 [task_list, auv_list, obstacle_list] = generate_env(num_tasks, num_obs, num_auvs, seed, entry_exit_split);
 move = false;
@@ -23,17 +23,18 @@ updated = true;     % cbba是否运行的标志
 
 
 %% PID initial
-yaw_kp = 10;
+yaw_kp = 2;
 yaw_ki =0;
-yaw_kd =10;
+yaw_kd =0;
 pid_controller('yaw_main', 0, 0, dt, yaw_kp, yaw_ki, yaw_kd, true);
-pitch_kp = 70;
-pitch_ki = 0;
-pitch_kd = 70;
+pitch_kp = 2;
+pitch_ki = 0.01;
+pitch_kd = 2;
 pid_controller('pitch_main', 0, 0, dt, pitch_kp, pitch_ki, pitch_kd, true);
+pid_vector = [yaw_kp, yaw_ki, yaw_kd, pitch_kp, pitch_ki, pitch_kd, dt];
 
 %% 初始化绘图
-r = 3;
+r = 15;
 [X, Y, Z] = sphere(20);
 if anime_switch
     figure;
@@ -64,7 +65,7 @@ if anime_switch
     trajPlot = gobjects(num_auvs,1);
     for i = 1:num_auvs
         x = cbba_auv(i).state;
-        auvPlot(i) = surf(2*r*X+x(7), 2*r*Y+x(8), 2*r*Z+x(9), 'FaceColor','b', 'EdgeColor','none');
+        auvPlot(i) = surf(r*X+x(7), r*Y+x(8), r*Z+x(9), 'FaceColor','b', 'EdgeColor','none');
         headingLine(i) = plot3([0 0], [0 0], [0 0], 'k-', 'LineWidth', 2);  % 黑色auv朝向线
         trajPlot(i) = plot3(nan, nan, nan, 'b-', 'LineWidth', 2);  % 轨迹
     end
@@ -101,7 +102,7 @@ while any(going)
                         executing(i) = true;
                     end
                 else
-                    ui = APF(x, goal, obstacle_list, dt);
+                    ui = APF(x, goal, obstacle_list, pid_vector);
                     if time - temp_task_start_time(i) >= task_list(find(vertcat(task_list.id) == temp_task, 1)).duration(i)  % 任务执行时间已经完成
                         executing(i) = false;
                     end
@@ -122,7 +123,7 @@ while any(going)
     end
     %% （是否）启动task allocation
     if updated
-        [cbba_auv,updated,init_time_sheet]= cbba_orig(cbba_auv,task_list, obstacle_list, time, updated,init_time_sheet);
+        [cbba_auv,updated,init_time_sheet]= cbba_orig(cbba_auv,task_list, obstacle_list, time, pid_vector, updated,init_time_sheet);
     end
     %% 更新仿真 绘制动画
     for i = 1:num_auvs
@@ -147,14 +148,14 @@ while any(going)
                              'ZData', [p_start(3), p_end(3)]);
             % 更新auv，轨迹
             title(['AUV APF Navigation ',num2str(time),'s']);
-            set(auvPlot(i),'XData',2*r*X+x(7),'YData',2*r*Y+x(8),'ZData',2*r*Z+x(9));
+            set(auvPlot(i),'XData',r*X+x(7),'YData',r*Y+x(8),'ZData',r*Z+x(9));
             set(trajPlot(i), 'XData', traj(1:count,i,1), ...
                  'YData', traj(1:count,i,2), ...
                  'ZData', traj(1:count,i,3));
             hold on;
-            xlim([-50 550]);
-            ylim([-50 550]);
-            zlim([-80 50]);
+            xlim([-50 3050]);
+            ylim([-50 3050]);
+            zlim([-230 50]);
             drawnow;
         end
     end

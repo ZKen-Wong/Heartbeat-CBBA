@@ -14,9 +14,9 @@ function [task_list, auv_list, obstacle_list] = generate_env(num_tasks, num_obs,
 rng(seed);
 
 %% 区域定义
-xrange = [0, 500];
-yrange = [0, 500];
-zrange = [-80, 0];
+xrange = [0, 3000];
+yrange = [0, 3000];
+zrange = [-200, 0];
 
 safe_radius = 80; % 出入口保护范围
 entry_exit_dist_range = [20, 50]; % 出入口间距
@@ -27,7 +27,7 @@ auv_list = struct([]);
 for i = 1:num_auvs
     % AUV对每个任务的专长度
     expertises = rand(1, num_tasks);      % 随机专长度0-1
-    mileage = 5000;
+    mileage = 15000;
     x = zeros(12,1);
     x(1) = 0.1;      % 0.1 initial speed
 

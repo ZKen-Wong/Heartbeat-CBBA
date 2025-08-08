@@ -1,5 +1,5 @@
 %% This is the original CBBA from IEEE TRANSACTIONS ON ROBOTICS, VOL. 25, NO. 4, AUGUST 2009
-function [cbba_auv,updated,init_time_sheet] = cbba_orig(cbba_auv,task_list, obstacle_list,time,updated,init_time_sheet)
+function [cbba_auv,updated,init_time_sheet] = cbba_orig(cbba_auv,task_list, obstacle_list,time, pid_vector,updated,init_time_sheet)
 
 [~,num_auvs] = size(cbba_auv);
 [~,num_tasks] = size(task_list);
@@ -18,17 +18,19 @@ end
 %% 计算各个路径点之间的耗时，建表
 if init_time_sheet
     for i = 1:num_auvs+num_tasks
+        % fprintf('time sheet %d\n',i);
         for j = 1:num_tasks
+            fprintf('row: %d col: %d\n',i,j);
             if i <= num_auvs  % 从auv当前位置出发
                 start_pos = cbba_auv(i).state(7:9)';
                 arrive = task_list(j).entry;
-                [time_cost, leng, ~] = APF_path(start_pos, arrive, obstacle_list, 0);
+                [time_cost, leng, ~] = APF_path(start_pos, arrive, obstacle_list, pid_vector, 0);
                 time_sheet(i,j) = time_cost;
                 len_sheet(i,j) = leng;
             else                % 从任务出口出发
                 start_pos = task_list(i-num_auvs).exit;
                 arrive = task_list(j).entry;
-                [time_cost, leng, ~] = APF_path(start_pos, arrive, obstacle_list, 0);
+                [time_cost, leng, ~] = APF_path(start_pos, arrive, obstacle_list, pid_vector, 0);
                 time_sheet(i,j) = time_cost;
                 len_sheet(i,j) = leng;
             end
