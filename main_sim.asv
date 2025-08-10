@@ -43,7 +43,7 @@ hb = struct();
 hb.R_comm      = 1000;    % m
 hb.c_sound     = 1500;    % m/s
 hb.T_HB        = 5;       % 心跳周期 (s)
-hb.tau_soft    = hb.R_comm/hb.c_sound + hb.T_HB + 1.0;  % 小失效容忍 ≈ 0.667s + 1s
+hb.tau_soft    = hb.R_comm/hb.c_sound + 1.0;  % 小失效容忍 ≈ 0.667s + 1s
 hb.tau_big_pad = 30.0;    % 大失效工程容差 (s)
 hb.dt_cap_min  = 30.0;    % 预测失败兜底 (s)
 
@@ -61,7 +61,7 @@ r = 15;
 [X, Y, Z] = sphere(20);
 if anime_switch
     figure;
-    set(gcf,'unit','normalize','position',[0 0.3 0.35 0.35]) % 设置窗口生成位置和大小
+    set(gcf,'unit','normalize','position',[0.55 0.3 0.35 0.35]) % 设置窗口生成位置和大小
     plot3([0 0], [0 0], [0 0], 'k-', 'LineWidth', 2);  % 黑色auv朝向线
     hold on; grid on; axis equal;
     xlabel('X'); ylabel('Y'); zlabel('Z');
@@ -80,7 +80,6 @@ if anime_switch
         exit = task_list(i).exit;
         entryPlot = surf(r*X+entry(1), r*Y+entry(2), r*Z+entry(3), 'FaceColor','y','EdgeColor','none');
         exitPlot = surf(r*X+exit(1), r*Y+exit(2), r*Z+exit(3), 'FaceColor','m','EdgeColor','none');
-        text(entry(1), entry(2), entry(3)+5*r, sprintf('E%d', i), 'Color','k', 'FontSize',10, 'FontWeight','bold');
         hold on;
     end
     % 初始化AUV与轨迹绘制
@@ -204,8 +203,7 @@ while any(going)
                 [TIME_SHEET, LEN_SHEET] = fetch_time_sheets();
                 t_meet = predict_next_contact(i, j, time, hb.R_comm, ...
                           cbba_auv, task_list, TIME_SHEET, LEN_SHEET, num_auvs);
-                % if ~isfinite(t_meet), t_meet = time + hb.dt_cap_min; end
-                %  永远无法重新通讯那就无法通，不要为了兜底加入一个固定值
+                if ~isfinite(t_meet), t_meet = time + hb.dt_cap_min; end
     
                 % 大失效截止：预计相遇剩余 + 30s
                 hb.T_deadline(i,j) = time + max(0, t_meet - time) + hb.tau_big_pad;
@@ -224,8 +222,7 @@ while any(going)
     end
     %% （是否）启动task allocation
     if updated
-        [cbba_auv,updated,init_time_sheet]= cbba_orig(cbba_auv,task_list, obstacle_list, ...
-            time, pid_vector, updated, last_updated, init_time_sheet);
+        [cbba_auv,updated,init_time_sheet]= cbba_orig(cbba_auv,task_list, obstacle_list, time, pid_vector, updated, init_time_sheet);
     end
     
     %% 随机auv失效

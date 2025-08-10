@@ -1,4 +1,4 @@
-function [task_list, auv_list, obstacle_list] = generate_env(num_tasks, num_obs, num_auvs, seed, entry_exit_split)
+function [task_list, auv_list, obstacle_list] = generate_env(num_tasks, num_obs, num_auvs, seed, fail_num, entry_exit_split)
 % 生成 AUV 环境，包括任务和障碍物信息
 % 输入：
 %   num_tasks         - 任务数量
@@ -24,6 +24,8 @@ entry_exit_dist_range = [20, 50]; % 出入口间距
 %% AUV生成
 % 含有auv对每个任务的专长度，总里程限制，当前位置
 auv_list = struct([]);
+fail_auv = randi([1 num_auvs],1,fail_num);  % 随机故障auv id
+fail_time = 2000 * rand(1,fail_auv) + 500; % 随机故障时间  500-2500s之间
 for i = 1:num_auvs
     % AUV对每个任务的专长度
     expertises = rand(1, num_tasks);      % 随机专长度0-1
@@ -35,6 +37,13 @@ for i = 1:num_auvs
     auv_list(i).expertise = expertises;
     auv_list(i).mileage = mileage;
     auv_list(i).state = x;          % 1xN AUVs
+    for j = 1:numel(fail_auv)
+        if i == fail_auv(j)
+            auv_list(i).fail_time = fail_time(j);
+        else
+            auv_list(i).fail_time = inf;
+        end
+    end
 end
 
 %% 任务生成

@@ -1,4 +1,4 @@
-function [task_list, obstacle_list] = generate_env(num_tasks, num_obs, num_auvs, seed, entry_exit_split)
+function [task_list, auv_list, obstacle_list] = generate_env(num_tasks, num_obs, num_auvs, seed, fail_num, entry_exit_split)
 % 生成 AUV 环境，包括任务和障碍物信息
 % 输入：
 %   num_tasks         - 任务数量
@@ -8,17 +8,43 @@ function [task_list, obstacle_list] = generate_env(num_tasks, num_obs, num_auvs,
 %   entry_exit_split  - 出口入口是否分离（true/false）
 % 输出：
 %   task_list         - 任务结构体数组
+%   auv_list          - auv结构体数组
 %   obstacle_list     - 障碍物结构体数组
 
 rng(seed);
 
 %% 区域定义
-xrange = [0, 500];
-yrange = [0, 500];
-zrange = [-80, 0];
+xrange = [0, 3000];
+yrange = [0, 3000];
+zrange = [-200, 0];
 
 safe_radius = 80; % 出入口保护范围
 entry_exit_dist_range = [20, 50]; % 出入口间距
+
+%% AUV生成
+% 含有auv对每个任务的专长度，总里程限制，当前位置
+auv_list = struct([]);
+fail_auv = randi([1 num_auvs],1,fail_num);  % 随机故障auv id
+fail_time = 2000 * rand(1,fail_auv) + 500; % 随机故障时间  500-2500s之间
+for i = 1:num_auvs
+    % AUV对每个任务的专长度
+    expertises = rand(1, num_tasks);      % 随机专长度0-1
+    mileage = 15000;
+    x = zeros(12,1);
+    x(1) = 0.1;      % 0.1 initial speed
+
+    auv_list(i).id = i;
+    auv_list(i).expertise = expertises;
+    auv_list(i).mileage = mileage;
+    auv_list(i).state = x;          % 1xN AUVs
+    for j = 1:numel(fail_auv)
+        if i == fail_auv(j)
+            auv_list(i).fail_time = fail_time(j);
+        else
+            auv_list(i).fail_time = inf;
+        end
+    end
+end
 
 %% 任务生成
 task_list = struct([]);
@@ -35,14 +61,16 @@ for i = 1:num_tasks
     end
 
     % 对每个AUV的任务价值和耗时
-    values = rand(1, num_auvs)*10;      % 任务价值 [0-10]
-    durations = randi([10, 60], 1, num_auvs);  % 耗时 10~60s
+    expertise = vertcat(auv_list.expertise);
+    values = 10 * expertise(:,i) ;      % 任务价值 [0-10]
+    durations = -500 * expertise(:,i) + 600;  % 耗时 100~600s
+
     deadline = randi([1000, 3000]);
 
     task_list(i).entry = entry;
     task_list(i).exit = exit;
-    task_list(i).value = values;          % 1xN AUVs
-    task_list(i).duration = durations;    % 1xN AUVs
+    task_list(i).value = values';          % 1xN AUVs
+    task_list(i).duration = durations';    % 1xN AUVs
     task_list(i).deadline = deadline;
     task_list(i).id = i;
 end

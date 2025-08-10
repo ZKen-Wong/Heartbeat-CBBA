@@ -71,7 +71,7 @@ function [time,len,pos] = APF_path(start_pos, goal, obstacle_list, pid_vector, a
             obs = obstacles(i,:);
             dis = pos - obs;
             dis(3) = 3 * dis(3);
-            dist = norm(dis);
+            dist = norm(dis) + 1e-6;
             if dist < d0 && dist > 1e-3
                 F_rep = F_rep + eta * (1/dist - 1/d0) / dist * dis;
             end

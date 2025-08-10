@@ -1,12 +1,10 @@
 %% This is the original CBBA from IEEE TRANSACTIONS ON ROBOTICS, VOL. 25, NO. 4, AUGUST 2009
-function [cbba_auv,updated,init_time_sheet] = cbba_orig(cbba_auv,task_list, obstacle_list, time, ...
-    pid_vector, updated, last_updated, init_time_sheet)
+function [cbba_auv,updated,init_time_sheet] = cbba_orig(cbba_auv,task_list, obstacle_list, ...
+    time, pid_vector,updated, last_updated,init_time_sheet)
 
 [~,num_auvs] = size(cbba_auv);
 [~,num_tasks] = size(task_list);
-if time - last_updated >= 1.5
-    updated = false;
-end
+if time - last_updated >= 
 % 使用持久变量字典
 persistent time_sheet
 persistent len_sheet
@@ -113,12 +111,10 @@ for i = 1:num_auvs
         cbba_auv(i).big_bid(best_task) = best_bid;
         cbba_auv(i).auv_win(best_task) = i;
         updated = true;
-        last_updated = time;
-        assignin('base','last_updated', last_updated);
         cbba_auv(i).temp_task = 0;
     end
 end
-
+end
 fprintf('bundle construc at time:%.1f\n',time);
 
 %% 通信模拟 —— 延迟桶（1000 m 范围，声速传播）
@@ -150,7 +146,7 @@ for i = 1:num_auvs
             msg.auv_win = cbba_auv(i).auv_win;
             msg.t_emit  = time;
             msg.t_arrive= time + tau;
-            delay_bucket(end+1) = msg; 
+            delay_bucket(end+1) = msg; %#ok<AGROW>
         else
             A(i,k) = 0;
         end
@@ -303,8 +299,6 @@ for i = 1:num_auvs
                         end
                     end
                     updated = true;cbba_auv(i).temp_task = 0;
-                    last_updated = time;
-                    assignin('base','last_updated', last_updated);
                 end
             elseif strcmp(action, 'reset')
                 % 清除本地与任务 task_id 相关的 bundle 和 path
@@ -313,8 +307,6 @@ for i = 1:num_auvs
                 cbba_auv(i).bundle = [];
                 cbba_auv(i).path = [];
                 updated = true;cbba_auv(i).temp_task = 0;
-                last_updated = time;
-                assignin('base','last_updated', last_updated);
             elseif strcmp(action, 'leave')
                 % 什么也不做
             end
