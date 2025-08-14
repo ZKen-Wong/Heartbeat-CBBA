@@ -27,7 +27,7 @@ function [time,len,pos] = APF_path(start_pos, goal, obstacle_list, pid_vector, a
     pitch_kp = pid_vector(4);
     pitch_ki = pid_vector(5);
     pitch_kd = pid_vector(6);
-    pid_controller('pitch', 0, 0, dt, pitch_kp, pitch_ki, pitch_kd, true);
+    pid_controller('pitch_path', 0, 0, dt, pitch_kp, pitch_ki, pitch_kd, true);
     
     %% 初始化绘图
     r = 15;
@@ -84,6 +84,7 @@ function [time,len,pos] = APF_path(start_pos, goal, obstacle_list, pid_vector, a
         F_total = 30*F_total/norm(F_total);
         target_yaw = atan2(F_total(2), F_total(1));
         target_pitch = atan2(-F_total(3), norm(F_total(1:2)));  % z向下为正
+        target_depth = goal(3);
     
         %% 控制器输出
         if (abs(target_yaw - yaw) > pi)
@@ -93,13 +94,14 @@ function [time,len,pos] = APF_path(start_pos, goal, obstacle_list, pid_vector, a
         %     target_yaw = target_yaw + 0.5*pi;
         % end
         delta_r = -pid_controller('yaw', target_yaw, yaw, dt, yaw_kp, yaw_ki, yaw_kd);
-        delta_b = -pid_controller('pitch', target_pitch, pitch, dt, pitch_kp, pitch_ki, pitch_kd);
+        % delta_b = -pid_controller('pitch', target_pitch, pitch, dt, pitch_kp, pitch_ki, pitch_kd);
+        delta_b = pid_controller('pitch_path', target_depth, pos(3), dt, pitch_kp, pitch_ki, pitch_kd);
         % 限幅
         if (abs(delta_r) > 10*pi/180)
-            delta_r = sign(delta_r)*20*pi/180;
+            delta_r = sign(delta_r)*10*pi/180;
         end
-        if (abs(delta_b) > 10*pi/180)
-            delta_b = sign(delta_b)*20*pi/180;
+        if (abs(delta_b) > 15*pi/180)
+            delta_b = sign(delta_b)*15*pi/180;
         end
     
         %% rpm控制，终点减速，速度不足就加速
@@ -119,7 +121,7 @@ function [time,len,pos] = APF_path(start_pos, goal, obstacle_list, pid_vector, a
         %% 输入组合
         n = 1100;
         ui(1) = delta_r;   % rudder
-        % ui(2) = delta_b;   % port and starboard stern plane
+        ui(2) = delta_b;   % port and starboard stern plane
         ui(3) = delta_b;   % top and bottom bow plane
         ui(4) = -delta_b;  % port bow
         ui(5) = -delta_b;  % starboard bow
@@ -168,7 +170,7 @@ function [time,len,pos] = APF_path(start_pos, goal, obstacle_list, pid_vector, a
         end
     
         %% 判断是否到达目标
-        if goal_dist < 1
+        if goal_dist < 3
             time = k*dt;
             % disp(['到达目标，用时：', num2str(time), ' 秒']);
             break;

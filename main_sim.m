@@ -1,8 +1,13 @@
+
+% seed_list=[23,11,33,579,57,786,78,85,99,114514];
+% for aaa = 1:10
 %% 仿真主程序
-clear();
+clear all;
 close();
-clear cbba_orig
-seed = 11;
+clear cbba_orig traj hb_record gantt_record
+seed = 34;
+S.env = RandStream('Threefry','Seed',seed + 11);
+S.fail = RandStream('Threefry','Seed',seed + 11); 
 
 %% 初始化 生成环境
 dt = 0.1;           % 仿真步长
@@ -14,9 +19,9 @@ fail_num = 1;      % 故障auv数量
 
 entry_exit_split = 0;   % task出入口是否分离
 % 环境初始化
-[task_list, auv_list, obstacle_list] = generate_env(num_tasks, num_obs, num_auvs, seed, fail_num, entry_exit_split);
+[task_list, auv_list, obstacle_list] = generate_env(num_tasks, num_obs, num_auvs, S, fail_num, entry_exit_split);
 going(1:num_auvs) = true;   % auv是否移动
-anime_switch = true;        % 是否渲染动画
+anime_switch = 1;        % 是否渲染动画
 temp_task_start_time = zeros(1,num_auvs);   % 记录停留原地执行任务的开始时间
 executing(1:num_auvs) = false;              % 停留原地执行任务的标志
 init_time_sheet = true;                     % cbba第一次运行时计算所有路径的耗时，节省计算资源
@@ -30,31 +35,45 @@ last_updated = 0;   % cbba上一次的更新时间
 yaw_kp = 2;
 yaw_ki =0;
 yaw_kd =0;
-pid_controller('yaw_main', 0, 0, dt, yaw_kp, yaw_ki, yaw_kd, true);
-pitch_kp = 2;
-pitch_ki = 0.01;
-pitch_kd = 2;
-pid_controller('pitch_main', 0, 0, dt, pitch_kp, pitch_ki, pitch_kd, true);
+
+pitch_kp = 0.1;  % 深度控制 0.1  pitch控制2
+pitch_ki = 0;
+pitch_kd = 0.5;  % 深度控制 0.5 pitch控制2
+% 为每个 AUV 生成唯一的控制器 ID，并“注册/重置”一次
+yaw_ids   = arrayfun(@(i) sprintf('yaw_%d',   i), 1:num_auvs, 'uni', false);
+pitch_ids = arrayfun(@(i) sprintf('pitch_%d', i), 1:num_auvs, 'uni', false);
+for i = 1:num_auvs
+    pid_controller(yaw_ids{i},   0, 0, dt, yaw_kp,   yaw_ki,   yaw_kd,   true);  % reset
+    pid_controller(pitch_ids{i}, 0, 0, dt, pitch_kp, pitch_ki, pitch_kd, true);  % reset
+end
 pid_vector = [yaw_kp, yaw_ki, yaw_kd, pitch_kp, pitch_ki, pitch_kd, dt];
 
 %% 失控/心跳检测初始化
 hb = struct();
+pos = zeros(num_auvs,3);
+dis = zeros(num_auvs,3);
 % 常量
 hb.R_comm      = 1000;    % m
 hb.c_sound     = 1500;    % m/s
 hb.T_HB        = 5;       % 心跳周期 (s)
-hb.tau_soft    = hb.R_comm/hb.c_sound + hb.T_HB + 1.0;  % 小失效容忍 ≈ 0.667s + 1s
+hb.tau_soft    = hb.R_comm/hb.c_sound + 2*hb.T_HB + 1.0;  % 小失效容忍 ≈ 0.667s + 1s
 hb.tau_big_pad = 30.0;    % 大失效工程容差 (s)
 hb.dt_cap_min  = 30.0;    % 预测失败兜底 (s)
 
 % 延迟桶（仅心跳/上下线消息；不放CBBA信息）
-hb.bucket = struct('type',{},'src',{},'dst',{},'t_emit',{},'t_arrive',{});
+hb.bucket = struct('type',{},'src',{},'dst',{},'t_emit',{},'t_arrive',{},'heard_row',{});
 
 % 成对状态机（i观察j）：0=CONNECTED, 1=SOFT_LOSS(大失效倒计时), 2=DEAD
 hb.link_state   = zeros(num_auvs);
 hb.last_rx      = zeros(num_auvs);   % i<-j 最近一次收到心跳的时间
 hb.t_soft_start = -inf(num_auvs);
 hb.T_deadline   =  inf(num_auvs);
+
+%% 数据记录的初始化
+hb_record = zeros(1,3); % 失效对象；小失效时间；大失效时间
+% 执行者，task id，开始时间，结束时间
+gantt_record = struct('auv',{},'task_id',{},'t_start',{},'t_end',{},'assign_round',{});
+alloc_round = 0;
 
 %% 初始化绘图
 r = 15;
@@ -80,18 +99,22 @@ if anime_switch
         exit = task_list(i).exit;
         entryPlot = surf(r*X+entry(1), r*Y+entry(2), r*Z+entry(3), 'FaceColor','y','EdgeColor','none');
         exitPlot = surf(r*X+exit(1), r*Y+exit(2), r*Z+exit(3), 'FaceColor','m','EdgeColor','none');
-        text(entry(1), entry(2), entry(3)+5*r, sprintf('E%d', i), 'Color','k', 'FontSize',10, 'FontWeight','bold');
+        text(entry(1), entry(2), entry(3)+5*r, sprintf('T%d', i), 'Color','k', 'FontSize',10, 'FontWeight','bold');
         hold on;
     end
     % 初始化AUV与轨迹绘制
     auvPlot = gobjects(num_auvs,1);
     headingLine = gobjects(num_auvs,1); 
     trajPlot = gobjects(num_auvs,1);
+    auvLabel = gobjects(num_auvs,1);
     for i = 1:num_auvs
         x = cbba_auv(i).state;
         auvPlot(i) = surf(r*X+x(7), r*Y+x(8), r*Z+x(9), 'FaceColor','b', 'EdgeColor','none');
         headingLine(i) = plot3([0 0], [0 0], [0 0], 'k-', 'LineWidth', 2);  % 黑色auv朝向线
         trajPlot(i) = plot3(nan, nan, nan, 'b-', 'LineWidth', 2);  % 轨迹
+        auvLabel(i) = text(x(7), x(8), x(9)+3*r, sprintf('%d', i), ...
+                       'Color','k', 'FontSize',10, 'FontWeight','bold', ...
+                       'HorizontalAlignment','center');
     end
 end
 
@@ -113,22 +136,31 @@ while any(going)
                 cbba_auv(i).temp_task = cbba_auv(i).temp_task + 1;
             end
 
-            if cbba_auv(i).temp_task > length(cbba_auv(i).path)    %完成全部任务则停车
+            if cbba_auv(i).temp_task > length(cbba_auv(i).path)   %完成全部任务则停车
                 ui = zeros(1,6);
                 going(i) = false;  % 这台auv结束行动
+                tid = cbba_auv(i).path(max(1,cbba_auv(i).temp_task - 1));   % 当前执行的任务 id
+                task_list(tid).done = true;
+                task_list(tid).done_reward = 0.9^(time/500) *  task_list(tid).value(i);
             else
                 temp_task = cbba_auv(i).path(cbba_auv(i).temp_task);
                 goal = task_list(find(vertcat(task_list.id) == temp_task, 1)).entry; %找到当前任务的位置
                 goal_dist = norm(pos - goal);
                 if goal_dist < 3            %检测到达位置
-                    if ~executing(i)
-                        cbba_auv(i).temp_task = cbba_auv(i).temp_task + 1;% 切换下一个任务
-                        temp_task_start_time(i) = time;                   % 记录执行开始时间
-                        executing(i) = true;
-                    end
+                    % if ~executing(i)
+                    cbba_auv(i).temp_task = cbba_auv(i).temp_task + 1;% 切换下一个任务
+                    temp_task_start_time(i) = time; % 记录执行开始时间
+                    executing(i) = true;
+                    % end
                 else
-                    ui = APF(x, goal, obstacle_list, pid_vector);
-                    if time - temp_task_start_time(i) >= task_list(find(vertcat(task_list.id) == temp_task, 1)).duration(i)  % 任务执行时间已经完成
+                    ui = APF(x, goal, obstacle_list, yaw_ids{i}, pitch_ids{i} , pid_vector);
+                    tid = cbba_auv(i).path(max(1,cbba_auv(i).temp_task - 1));              % 当前执行的任务 id
+                    if time - temp_task_start_time(i) >= task_list(tid).duration(i) % 任务执行时间已经完成
+                        % 登记已经完成的任务
+                        if ~task_list(tid).done && executing(i)
+                            task_list(tid).done = true;
+                            task_list(tid).done_reward = 0.9^(time/500) *  task_list(tid).value(i);
+                        end
                         executing(i) = false;
                     end
                 end
@@ -148,19 +180,24 @@ while any(going)
     end
 
     %% 心跳检测：发送
-    pos = zeros(num_auvs,3);
     for ii=1:num_auvs, pos(ii,:) = cbba_auv(ii).state(7:9)'; end
+    for i = 1:num_auvs
+        for j = 1:num_auvs
+            d = norm(pos(i,:) - pos(j,:));
+            dis(i,j) = d;
+        end
+    end
     
     if mod(time, hb.T_HB) < dt/2
         for i = 1:num_auvs
             if ~cbba_auv(i).alive, continue; end
             for k = 1:num_auvs
                 if i==k, continue; end
-                d = norm(pos(i,:) - pos(k,:));
+                d = dis(i,k);
                 if d <= hb.R_comm
                     tau = d / hb.c_sound;
                     hb.bucket(end+1) = struct('type','HEARTBEAT','src',i,'dst',k, ...
-                        't_emit',time,'t_arrive',time+tau); 
+                        't_emit',time,'t_arrive',time+tau,'heard_row',hb.last_rx(i,:)); 
                 end
             end
         end
@@ -172,9 +209,12 @@ while any(going)
             if hb.bucket(m).t_arrive <= time
                 src = hb.bucket(m).src;
                 dst = hb.bucket(m).dst;
+                heard_row = hb.bucket(m).heard_row;
                 if strcmp(hb.bucket(m).type,'HEARTBEAT')
                     hb.last_rx(dst,src) = time;                 % i<-j
                     cbba_auv(dst).commu_time(src) = time;       % 同步到你已有字段
+                    heard_row(dst) = 0; heard_row(src) = 0;     % 将收到的最后通信表里的收发信人置零
+                    hb.last_rx(dst,:) = max(hb.last_rx(dst,:), heard_row);  %更新为最新的收信时间
                 end
                 keep(m) = false;
             end
@@ -192,7 +232,9 @@ while any(going)
             % 连通
             if dt_no_rx <= hb.tau_soft
                 hb.link_state(i,j) = 0;  % CONNECTED
-                continue;
+                hb.t_soft_start(i,j) = inf;
+                hb.T_deadline(i,j) = inf;
+                continue; 
             end
     
             % 刚进入小失效：启动大失效倒计时
@@ -201,14 +243,20 @@ while any(going)
                 hb.t_soft_start(i,j) = time;
     
                 % 预测下次进入通信半径时间
+                if dis(i,j)<hb.R_comm
+                    t_meet = 0;
+                else
                 [TIME_SHEET, LEN_SHEET] = fetch_time_sheets();
                 t_meet = predict_next_contact(i, j, time, hb.R_comm, ...
                           cbba_auv, task_list, TIME_SHEET, LEN_SHEET, num_auvs);
+                end
                 % if ~isfinite(t_meet), t_meet = time + hb.dt_cap_min; end
                 %  永远无法重新通讯那就无法通，不要为了兜底加入一个固定值
     
                 % 大失效截止：预计相遇剩余 + 30s
                 hb.T_deadline(i,j) = time + max(0, t_meet - time) + hb.tau_big_pad;
+                % 记录小失效触发
+                hb_record(end+1,:) = [j,time,0];
             end
     
             % 大失效触发
@@ -218,6 +266,8 @@ while any(going)
                 if did_release
                     updated = true;       % 触发下一轮 CBBA
                     init_time_sheet = true;
+                    % 记录小失效触发
+                    hb_record(end+1,:) = [j,0,time];
                 end
             end
         end
@@ -226,6 +276,26 @@ while any(going)
     if updated
         [cbba_auv,updated,init_time_sheet]= cbba_orig(cbba_auv,task_list, obstacle_list, ...
             time, pid_vector, updated, last_updated, init_time_sheet);
+        if ~updated
+            % 完成分配后记录方案
+            alloc_round = alloc_round + 1;
+            for n = 1:num_auvs
+                if isempty(cbba_auv(n).path), continue; end 
+                t_arrive = cbba_auv(n).time_list;
+                for k = 1:numel(cbba_auv(n).path)
+                    tid = cbba_auv(n).path(k);
+                    t_start_abs = t_arrive(k);
+                    t_end_abs   = t_start_abs + task_list(tid).duration(cbba_auv(n).id);
+                    gantt_record(end+1) = struct( ...
+                        'auv',     cbba_auv(n).id, ...
+                        'task_id',      tid, ...
+                        't_start', t_start_abs, ...
+                        't_end',   t_end_abs, ...
+                        'assign_round',alloc_round);  
+                end 
+            end
+
+        end
     end
     
     %% 随机auv失效
@@ -243,7 +313,7 @@ while any(going)
             continue;
         end
         x = cbba_auv(i).state;
-        if mod(count,100) == 0 && anime_switch
+        if mod(count,200) == 0 && anime_switch
             % 朝向单位向量（以 body x 方向为基础）
             dir_len = 30;  % 线段长度
             dx = dir_len * cos(pitch) * cos(yaw);
@@ -264,6 +334,7 @@ while any(going)
             set(trajPlot(i), 'XData', traj(1:count,i,1), ...
                  'YData', traj(1:count,i,2), ...
                  'ZData', traj(1:count,i,3));
+            set(auvLabel(i), 'Position', [x(7), x(8), x(9)+3*r]);
             hold on;
             xlim([-50 3050]);
             ylim([-50 3050]);
@@ -271,11 +342,25 @@ while any(going)
             drawnow;
         end
     end
-    %% 记录数据
-
 
 end
-
+%% 事后统计数据
+% 分析心跳机制
+% [summary_hb, perAUV_hb] = analyze_hb(hb_record, cbba_auv,seed);
+% 画gunchat
+plot_cbba_timeline(gantt_record, cbba_auv, seed);
+% 分析reward recover 情况
+% reward is the total reward of the whole 分配方案
+reward = 0;
+for task_id = 1:num_tasks
+    reward = reward + task_list(task_id).done_reward;
+end
+done = sum(vertcat(task_list.done));
+reward_record = struct('seed',seed,'auv_num', num_auvs, ...
+    'fail_num',fail_num, 'task_num', num_tasks,'assign_round',alloc_round, ...
+    'task_done', done, 'reward',reward);
+% append_reward_table(reward_record, seed);
+% end
     %% 附加函数
     function [TIME_SHEET, LEN_SHEET] = fetch_time_sheets()
         if evalin('base','exist(''TIME_SHEET'',''var'')')
@@ -361,6 +446,7 @@ end
     end
     
     function [T, P] = build_timeline_for_agent(auv, task_list, TIME_SHEET, LEN_SHEET, num_auvs)
+
         % LEN_SHEET 预留
         % T 到达各个路径点的累计时间   P记录各个路径点位置
         T = []; P = [];

@@ -1,4 +1,4 @@
-function ui = APF(x, goal, obstacle_list, pid_vector)
+function ui = APF(x, goal, obstacle_list, yaw_ids, pitch_ids, pid_vector)
 %% PID 由主程序来初始化
 yaw_kp = pid_vector(1);
 yaw_ki =pid_vector(2);
@@ -38,6 +38,7 @@ F_total = F_att + F_rep;
 F_total = 30*F_total/norm(F_total);
 target_yaw = atan2(F_total(2), F_total(1));
 target_pitch = atan2(-F_total(3), norm(F_total(1:2)));  % z向下为正
+target_depth = goal(3);
 
 %% 控制器输出
 if (abs(target_yaw - yaw) > pi)
@@ -46,13 +47,14 @@ end
 % if round(target_yaw) == round(yaw)
 %     target_yaw = target_yaw + 0.5*pi;
 % end
-delta_r = -pid_controller('yaw_main', target_yaw, yaw, dt, yaw_kp, yaw_ki, yaw_kd);
-delta_b = -pid_controller('pitch_main', target_pitch, pitch, dt, pitch_kp, pitch_ki, pitch_kd);
+delta_r = -pid_controller(yaw_ids, target_yaw, yaw, dt, yaw_kp, yaw_ki, yaw_kd);
+% delta_b = -pid_controller('pitch_main', target_pitch, pitch, dt, pitch_kp, pitch_ki, pitch_kd);
+delta_b = pid_controller(pitch_ids, target_depth, pos(3), dt, pitch_kp, pitch_ki, pitch_kd);
 % 限幅
 if (abs(delta_r) > 10*pi/180)
     delta_r = sign(delta_r)*10*pi/180;
 end
-if (abs(delta_b) > 20)
+if (abs(delta_b) > 10*pi/180)
     delta_b = sign(delta_b)*10*pi/180;
 end
 

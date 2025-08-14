@@ -1,384 +1,380 @@
-%% 仿真主程序
-clear();
-close();
-clear cbba_orig
-seed = 11;
+%% This is the original CBBA from IEEE TRANSACTIONS ON ROBOTICS, VOL. 25, NO. 4, AUGUST 2009
+function [cbba_auv,updated,init_time_sheet] = cbba_orig(cbba_auv,task_list, obstacle_list, time, ...
+    pid_vector, updated, last_updated, init_time_sheet)
 
-%% 初始化 生成环境
-dt = 0.1;           % 仿真步长
-count = 0;          % 仿真轮次  
-num_tasks = 6;      % 任务总数
-num_obs = 200;      % 障碍物总数
-num_auvs = 3;       % auv总数
-fail_num = 1;      % 故障auv数量
-
-entry_exit_split = 0;   % task出入口是否分离
-% 环境初始化
-[task_list, auv_list, obstacle_list] = generate_env(num_tasks, num_obs, num_auvs, seed, fail_num, entry_exit_split);
-going(1:num_auvs) = true;   % auv是否移动
-anime_switch = true;        % 是否渲染动画
-temp_task_start_time = zeros(1,num_auvs);   % 记录停留原地执行任务的开始时间
-executing(1:num_auvs) = false;              % 停留原地执行任务的标志
-init_time_sheet = true;                     % cbba第一次运行时计算所有路径的耗时，节省计算资源
-
-[cbba_auv] = init_cbba(auv_list, num_tasks);  % cbba模块初始化
-updated = true;     % cbba是否运行的标志
-last_updated = 0;   % cbba上一次的更新时间
-
-
-%% PID initial
-yaw_kp = 2;
-yaw_ki =0;
-yaw_kd =0;
-pid_controller('yaw_main', 0, 0, dt, yaw_kp, yaw_ki, yaw_kd, true);
-pitch_kp = 2;
-pitch_ki = 0.01;
-pitch_kd = 2;
-pid_controller('pitch_main', 0, 0, dt, pitch_kp, pitch_ki, pitch_kd, true);
-pid_vector = [yaw_kp, yaw_ki, yaw_kd, pitch_kp, pitch_ki, pitch_kd, dt];
-
-%% 失控/心跳检测初始化
-hb = struct();
-% 常量
-hb.R_comm      = 1000;    % m
-hb.c_sound     = 1500;    % m/s
-hb.T_HB        = 5;       % 心跳周期 (s)
-hb.tau_soft    = hb.R_comm/hb.c_sound + hb.T_HB + 1.0;  % 小失效容忍 ≈ 0.667s + 1s
-hb.tau_big_pad = 30.0;    % 大失效工程容差 (s)
-hb.dt_cap_min  = 30.0;    % 预测失败兜底 (s)
-
-% 延迟桶（仅心跳/上下线消息；不放CBBA信息）
-hb.bucket = struct('type',{},'src',{},'dst',{},'t_emit',{},'t_arrive',{});
-
-% 成对状态机（i观察j）：0=CONNECTED, 1=SOFT_LOSS(大失效倒计时), 2=DEAD
-hb.link_state   = zeros(num_auvs);
-hb.last_rx      = zeros(num_auvs);   % i<-j 最近一次收到心跳的时间
-hb.t_soft_start = -inf(num_auvs);
-hb.T_deadline   =  inf(num_auvs);
-
-%% 初始化绘图
-r = 15;
-[X, Y, Z] = sphere(20);
-if anime_switch
-    figure;
-    set(gcf,'unit','normalize','position',[0 0.3 0.35 0.35]) % 设置窗口生成位置和大小
-    plot3([0 0], [0 0], [0 0], 'k-', 'LineWidth', 2);  % 黑色auv朝向线
-    hold on; grid on; axis equal;
-    xlabel('X'); ylabel('Y'); zlabel('Z');
-    title('AUV APF Navigation');
-
-    % 绘制障碍物
-    for i = 1:num_obs
-        surf(obstacle_list(i).radius*X+obstacle_list(i).pos(1),...
-            obstacle_list(i).radius*Y+obstacle_list(i).pos(2),...
-            obstacle_list(i).radius*Z+obstacle_list(i).pos(3),...
-            'FaceColor','r','EdgeColor','none','FaceAlpha',0.5);
+[~,num_auvs] = size(cbba_auv);
+[~,num_tasks] = size(task_list);
+if time - last_updated >= 1.5
+    updated = false;
+end
+% 使用持久变量字典
+persistent time_sheet
+persistent len_sheet
+% timesheet记录auv当前位置和任务各个路径点之间的通行耗时,没有auv到达点，行首先是auv，然后是任务，均为从任务出口前往任务入口，行为出发，列为到达;
+% len sheet同理
+if isempty(time_sheet)
+    time_sheet = zeros(num_tasks+num_auvs,num_tasks);
+    time_sheet(:) = inf;
+    len_sheet = zeros(num_tasks+num_auvs,num_tasks);
+    len_sheet(:) = inf;
+end
+%% 计算各个路径点之间的耗时，建表
+if init_time_sheet
+    if all(isinf(time_sheet), 'all')
+        first = true;
+    else
+        first = false;
     end
-    % 绘制目标点
-    for i = 1:num_tasks
-        entry = task_list(i).entry;
-        exit = task_list(i).exit;
-        entryPlot = surf(r*X+entry(1), r*Y+entry(2), r*Z+entry(3), 'FaceColor','y','EdgeColor','none');
-        exitPlot = surf(r*X+exit(1), r*Y+exit(2), r*Z+exit(3), 'FaceColor','m','EdgeColor','none');
-        text(entry(1), entry(2), entry(3)+5*r, sprintf('E%d', i), 'Color','k', 'FontSize',10, 'FontWeight','bold');
-        hold on;
+    for i = 1:num_auvs+num_tasks
+        % fprintf('time sheet %d\n',i);
+        for j = 1:num_tasks
+            fprintf('row: %d col: %d\n',i,j);
+            if i <= num_auvs  % 从auv当前位置出发
+                start_pos = cbba_auv(i).state(7:9)';
+                arrive = task_list(j).entry;
+                [time_cost, leng, ~] = APF_path(start_pos, arrive, obstacle_list, pid_vector, 0);
+                time_sheet(i,j) = time_cost;
+                len_sheet(i,j) = leng;
+            else                % 从任务出口出发
+                if ~first, continue; end %任务与任务间的距离计算，在再分配阶段直接跳过
+                start_pos = task_list(i-num_auvs).exit;
+                arrive = task_list(j).entry;
+                [time_cost, leng, ~] = APF_path(start_pos, arrive, obstacle_list, pid_vector, 0);
+                time_sheet(i,j) = time_cost;
+                len_sheet(i,j) = leng;
+            end
+        end
     end
-    % 初始化AUV与轨迹绘制
-    auvPlot = gobjects(num_auvs,1);
-    headingLine = gobjects(num_auvs,1); 
-    trajPlot = gobjects(num_auvs,1);
-    for i = 1:num_auvs
-        x = cbba_auv(i).state;
-        auvPlot(i) = surf(r*X+x(7), r*Y+x(8), r*Z+x(9), 'FaceColor','b', 'EdgeColor','none');
-        headingLine(i) = plot3([0 0], [0 0], [0 0], 'k-', 'LineWidth', 2);  % 黑色auv朝向线
-        trajPlot(i) = plot3(nan, nan, nan, 'b-', 'LineWidth', 2);  % 轨迹
-    end
+    disp('time sheet and len sheet done')
+    % ★★ 新增：把持久变量同步到 base（主程序要用来做接近时间预测）
+    assignin('base','TIME_SHEET', time_sheet);
+    assignin('base','LEN_SHEET',  len_sheet);
+
+    init_time_sheet =false;
 end
 
-while any(going)
-    count = count + 1;
-    time = count * dt;
-%% 移动迭代
-% 得到APF指向 模型仿真移动 无方案and执行任务时停止移动
-    for i = 1:num_auvs
-        if ~going(i)
+%% build bundle 构建任务包
+% CBBA Bundle Construction
+for i = 1:num_auvs
+    if ~cbba_auv(i).alive,continue;end  % 跳过dead auv
+    best_bid = -inf;
+    best_task = -1;
+    best_insert_pos = -1;
+
+    % 枚举所有任务
+    for j = 1:num_tasks
+        if ismember(j, cbba_auv(i).bundle)
+            continue;  % 已在bundle中，跳过
+        end
+        if cbba_auv(i).auv_win(j) ~= 0 && cbba_auv(i).auv_win(j) ~= i
+            continue;  % 任务被别人赢得，跳过
+        end
+        if isfield(task_list, 'done') && task_list(j).done
             continue;
-        end
-        x = cbba_auv(i).state;
-        pos = x(7:9)';
-        pitch = x(11);
-        yaw = x(12);
-        if ~updated   % 没有在更新任务
-            if cbba_auv(i).temp_task == 0  %初始化变量当前任务
-                cbba_auv(i).temp_task = cbba_auv(i).temp_task + 1;
-            end
+        end             % 任务已经完成
 
-            if cbba_auv(i).temp_task > length(cbba_auv(i).path)    %完成全部任务则停车
-                ui = zeros(1,6);
-                going(i) = false;  % 这台auv结束行动
-            else
-                temp_task = cbba_auv(i).path(cbba_auv(i).temp_task);
-                goal = task_list(find(vertcat(task_list.id) == temp_task, 1)).entry; %找到当前任务的位置
-                goal_dist = norm(pos - goal);
-                if goal_dist < 3            %检测到达位置
-                    if ~executing(i)
-                        cbba_auv(i).temp_task = cbba_auv(i).temp_task + 1;% 切换下一个任务
-                        temp_task_start_time(i) = time;                   % 记录执行开始时间
-                        executing(i) = true;
-                    end
-                else
-                    ui = APF(x, goal, obstacle_list, pid_vector);
-                    if time - temp_task_start_time(i) >= task_list(find(vertcat(task_list.id) == temp_task, 1)).duration(i)  % 任务执行时间已经完成
-                        executing(i) = false;
-                    end
-                end
-            end
-        else
-            ui = zeros(1,6);
-        end
-        % 状态更新
-        if executing(i)
-            xdot = zeros(12,1);
-        else
-            xdot = auv(x, ui);
-        end
-        x = x + dt * xdot;
-        traj(count,i,:) = x(7:9)';
-        cbba_auv(i).state = x;
-    end
-
-    %% 心跳检测：发送
-    pos = zeros(num_auvs,3);
-    for ii=1:num_auvs, pos(ii,:) = cbba_auv(ii).state(7:9)'; end
-    
-    if mod(time, hb.T_HB) < dt/2
-        for i = 1:num_auvs
-            if ~cbba_auv(i).alive, continue; end
-            for k = 1:num_auvs
-                if i==k, continue; end
-                d = norm(pos(i,:) - pos(k,:));
-                if d <= hb.R_comm
-                    tau = d / hb.c_sound;
-                    hb.bucket(end+1) = struct('type','HEARTBEAT','src',i,'dst',k, ...
-                        't_emit',time,'t_arrive',time+tau); 
-                end
-            end
-        end
-    end
-    %% 心跳检测：递送
-   if ~isempty(hb.bucket)
-        keep = true(1,numel(hb.bucket));
-        for m = 1:numel(hb.bucket)
-            if hb.bucket(m).t_arrive <= time
-                src = hb.bucket(m).src;
-                dst = hb.bucket(m).dst;
-                if strcmp(hb.bucket(m).type,'HEARTBEAT')
-                    hb.last_rx(dst,src) = time;                 % i<-j
-                    cbba_auv(dst).commu_time(src) = time;       % 同步到你已有字段
-                end
-                keep(m) = false;
-            end
-        end
-        hb.bucket = hb.bucket(keep);
-   end
-   %% 小/大失效状态机（仅 DEAD 触发重分配)
-    for i = 1:num_auvs      % i是收信人,本地auv
-        if ~cbba_auv(i).alive, continue; end % dead  不再更新
-        for j = 1:num_auvs  % j是发信人
-            if i==j, continue; end
-    
-            dt_no_rx = time - hb.last_rx(i,j);
-    
-            % 连通
-            if dt_no_rx <= hb.tau_soft
-                hb.link_state(i,j) = 0;  % CONNECTED
+        % 在当前路径中尝试插入任务j，找出最高的bid位置
+        cur_path = cbba_auv(i).path;
+        [cur_reward, duration, mile] = path_reward(cbba_auv(i), task_list, time_sheet, len_sheet, cur_path, num_auvs);
+        best_bid_j = -inf;
+        best_pos_j = 0;
+        
+        % 遍历插入位置，标记任务J的最高出价和插入path的位置
+        for pos = 0:length(cur_path)
+            new_path = insert_at(cur_path, j, pos+1); % 插入后新的path
+            [reward, duration, mile, t_list, mile_list] = path_reward(cbba_auv(i), task_list, time_sheet, len_sheet, new_path, num_auvs);
+            cbba_auv(i).mile = mile;
+            % 对任务j的评估出价
+            % bid = reward / (duration + 1e-5);  % 防止除0
+            bid = reward - cur_reward;
+            
+            % 超过航程就不更新最优bid和插入位置
+            if mile > cbba_auv(i).mileage
+                % fprintf('auv %d try task %d at %d over mile \n',i,j,pos);
                 continue;
-            end
-    
-            % 刚进入小失效：启动大失效倒计时
-            if hb.link_state(i,j) == 0
-                hb.link_state(i,j)   = 1;             % SOFT_LOSS
-                hb.t_soft_start(i,j) = time;
-    
-                % 预测下次进入通信半径时间
-                [TIME_SHEET, LEN_SHEET] = fetch_time_sheets();
-                t_meet = predict_next_contact(i, j, time, hb.R_comm, ...
-                          cbba_auv, task_list, TIME_SHEET, LEN_SHEET, num_auvs);
-                % if ~isfinite(t_meet), t_meet = time + hb.dt_cap_min; end
-                %  永远无法重新通讯那就无法通，不要为了兜底加入一个固定值
-    
-                % 大失效截止：预计相遇剩余 + 30s
-                hb.T_deadline(i,j) = time + max(0, t_meet - time) + hb.tau_big_pad;
-            end
-    
-            % 大失效触发
-            if hb.link_state(i,j) == 1 && time >= hb.T_deadline(i,j)
-                hb.link_state(i,j) = 2;   % DEAD
-                [cbba_auv, did_release] = handle_dead(cbba_auv, j, num_tasks);
-                if did_release
-                    updated = true;       % 触发下一轮 CBBA
-                    init_time_sheet = true;
+            else % 非最优那也不更新
+                if bid > best_bid_j && bid > 0
+                    best_bid_j = bid;
+                    best_pos_j = pos + 1;
+                    % fprintf('auv %d try task %d at %d for %d m \n',i,j,best_pos_j,round(mile));
                 end
             end
         end
-    end
-    %% （是否）启动task allocation
-    if updated
-        [cbba_auv,updated,init_time_sheet]= cbba_orig(cbba_auv,task_list, obstacle_list, ...
-            time, pid_vector, updated, last_updated, init_time_sheet);
-    end
-    
-    %% 随机auv失效
-    for idx = 1:num_auvs
-        if cbba_auv(idx).alive && time >= cbba_auv(idx).fail_time
-            cbba_auv(idx).alive = false;   % 停止发心跳
-            going(idx) = false;            % 也可改成漂移，这里直接停
-            fprintf('AUV %d failed at t=%.1f s\n', idx, time);
+
+        % 遍历所有可选任务，判断是否是当前所有任务中最好的一个
+        if best_bid_j > best_bid
+            best_bid = best_bid_j;
+            best_task = j;
+            best_insert_pos = best_pos_j;
         end
     end
 
-    %% 更新仿真 绘制动画
-    for i = 1:num_auvs
-        if ~going(i)
-            continue;
-        end
-        x = cbba_auv(i).state;
-        if mod(count,100) == 0 && anime_switch
-            % 朝向单位向量（以 body x 方向为基础）
-            dir_len = 30;  % 线段长度
-            dx = dir_len * cos(pitch) * cos(yaw);
-            dy = dir_len * cos(pitch) * sin(yaw);
-            dz = -dir_len * sin(pitch);  % z 轴向下为正
-            
-            % 起点和终点
-            p_start = pos;
-            p_end = pos + [dx, dy, dz];
-            
-            % 更新朝向线段
-            set(headingLine(i), 'XData', [p_start(1), p_end(1)], ...
-                             'YData', [p_start(2), p_end(2)], ...
-                             'ZData', [p_start(3), p_end(3)]);
-            % 更新auv，轨迹
-            title(['AUV APF Navigation ',num2str(time),'s']);
-            set(auvPlot(i),'XData',r*X+x(7),'YData',r*Y+x(8),'ZData',r*Z+x(9));
-            set(trajPlot(i), 'XData', traj(1:count,i,1), ...
-                 'YData', traj(1:count,i,2), ...
-                 'ZData', traj(1:count,i,3));
-            hold on;
-            xlim([-50 3050]);
-            ylim([-50 3050]);
-            zlim([-230 50]);
-            drawnow;
+    % 如果中标任务J，加入bundle和path 更新auv_win 更新big_bid
+    if best_task ~= -1 && best_bid > cbba_auv(i).big_bid(best_task)
+        cbba_auv(i).bundle(end+1) = best_task;
+        cbba_auv(i).path = insert_at(cur_path, best_task, best_insert_pos);
+        cbba_auv(i).big_bid(best_task) = best_bid;
+        cbba_auv(i).auv_win(best_task) = i;
+        updated = true;
+        last_updated = time;
+        assignin('base','last_updated', last_updated);
+        cbba_auv(i).temp_task = 0;
+    end
+end
+
+fprintf('bundle construc at time:%.1f\n',time);
+
+%% 通信模拟 —— 延迟桶（1000 m 范围，声速传播）
+persistent delay_bucket
+if isempty(delay_bucket); delay_bucket = struct('type',{},'src',{},'dst',{}, ...
+        'big_bid',{},'auv_win',{},'t_emit',{},'t_arrive',{}); end
+
+c_sound = 1500;             % 水声速 (m/s)
+range_comm = 1000;          % 有效距离 (m)
+
+% 位置与邻接
+pos = zeros(num_auvs,3);
+for ii = 1:num_auvs, pos(ii,:) = cbba_auv(ii).state(7:9)'; end
+A = zeros(num_auvs);
+
+% 1) 广播当前视图到邻居（进入延迟桶）
+for i = 1:num_auvs
+    if ~cbba_auv(i).alive,continue;end  % 跳过dead auv
+    for k = 1:num_auvs
+        if i==k, continue; end
+        d = norm(pos(i,:) - pos(k,:));
+        if d <= range_comm
+            A(i,k) = 1;
+            tau = d / c_sound; % 传播时延
+            msg.type    = 'CBBA_VIEW';
+            msg.src     = i;
+            msg.dst     = k;
+            msg.big_bid = cbba_auv(i).big_bid;  % 发送者当下视图
+            msg.auv_win = cbba_auv(i).auv_win;
+            msg.t_emit  = time;
+            msg.t_arrive= time + tau;
+            delay_bucket(end+1) = msg; 
+        else
+            A(i,k) = 0;
         end
     end
-    %% 记录数据
+    cbba_auv(i).commu = A(i,:);  % 保持你原来的邻接记录
+end
+
+% 2) 递送到时消息 → 生成 per-receiver 的 incoming 视图
+incoming = cell(1,num_auvs);  % incoming{i}.from(k).big_bid / .auv_win / .t_emit
+for i = 1:num_auvs
+    incoming{i} = struct('from', containers.Map('KeyType','int32','ValueType','any'));
+end
+
+keep_idx = false(1, numel(delay_bucket));
+for m = 1:numel(delay_bucket)
+    if delay_bucket(m).t_arrive <= time
+        dst = delay_bucket(m).dst;
+        src = delay_bucket(m).src;
+        rec = struct('big_bid', delay_bucket(m).big_bid, ...
+                     'auv_win', delay_bucket(m).auv_win, ...
+                     't_emit',  delay_bucket(m).t_emit);
+        incoming{dst}.from(src) = rec;
+        % 记录收到时间戳（用于你的冲突逻辑的 s_k / s_i）
+        cbba_auv(dst).commu_time(src) = time;
+    else
+        keep_idx(m) = true; % 还没到达，保留在桶里
+    end
+end
+delay_bucket = delay_bucket(keep_idx);
+
+%% Conflic Resolution 冲突解决
+for i = 1:num_auvs
+    for k = 1:num_auvs
+        if i == k || cbba_auv(i).commu(k) == 0  % 跳过自我通信和无信号的通信
+            continue;
+        end
+        if ~cbba_auv(i).alive,continue;end  % 跳过dead auv
+
+        for task_id = 1:num_tasks
+           % ==== 新增：从 incoming 读取 k 在 i 处“可见”的视图（若无，则退回当前全局值） ====
+            if incoming{i}.from.isKey(int32(k))
+                peer = incoming{i}.from(int32(k));
+                z_kj = peer.auv_win(task_id);    % k 的“已达达”观点
+                y_kj = peer.big_bid(task_id);
+            else
+                z_kj = cbba_auv(k).auv_win(task_id);  % 没收到就用当前值（等价于零延迟）
+                y_kj = cbba_auv(k).big_bid(task_id);
+            end
+            % 原来这两行可以删或注释掉：
+            % z_kj = cbba_auv(k).auv_win(task_id);
+            % y_kj = cbba_auv(k).big_bid(task_id);
+
+            z_ij = cbba_auv(i).auv_win(task_id);    % i 的观点保持不变
+            y_ij = cbba_auv(i).big_bid(task_id);
+
+            s_i  = cbba_auv(i).commu_time;          % i 记录到各AUV的时间戳
+            s_k  = cbba_auv(k).commu_time;          % k 记录到各AUV的时间戳（保持你的用法）
+
+            % 定义接收者的行为（默认 leave，不变）
+            action = 'leave';
+
+            if z_kj == k                       % k 认为自己赢
+                if z_ij == i && y_kj > y_ij
+                    action = 'update';
+                elseif z_ij == k
+                    action = 'update';
+                elseif z_ij ~= i && z_ij ~= k
+                    if y_kj > y_ij || s_k(z_ij) > s_i(z_ij)
+                        action = 'update';
+                    end
+                elseif z_ij == 0
+                    action = 'update';
+                end
+            elseif z_kj == i                    % k 认为 i 赢
+                if z_ij == i
+                    action = 'leave';
+                elseif z_ij == k
+                    action = 'reset';
+                elseif z_ij ~= i && z_ij ~= k
+                    if s_k(z_ij) > s_i(z_ij)
+                        action = 'reset';
+                    end
+                elseif z_ij == 0
+                    action = 'leave';
+                end
+            elseif z_kj ~= i && z_kj ~= k && z_kj ~= 0  % k 认为 m 赢（m ≠ i,j）
+                m = z_kj;
+                s_km = s_k(m);
+                s_im = s_i(m);
+
+                if z_ij == i && s_km > s_im && y_kj > y_ij
+                    action = 'update';
+                elseif z_ij == k
+                    if s_km > s_im
+                        action = 'update';
+                    else
+                        action = 'reset';
+                    end
+                elseif z_ij == m
+                    if s_km > s_im
+                        action = 'update';
+                    end
+                elseif z_ij ~= i && z_ij ~= k && z_ij ~= m && z_ij ~= 0
+                    n = z_ij;
+                    s_kn = s_k(n);
+                    s_in = s_i(n);
+                    if s_km > s_im && s_kn > s_in
+                        action = 'update';
+                    elseif s_km > s_im && y_kj > y_ij
+                        action = 'update';
+                    elseif s_kn > s_in && s_im > s_km
+                        action = 'reset';
+                    end
+                elseif z_ij == 0
+                    if s_km > s_im
+                        action = 'update';
+                    end
+                end
+            elseif z_kj == 0                % k 认为 该任务无人认领
+                if z_ij == i
+                    action = 'leave';
+                elseif z_ij == k
+                    action = 'update';
+                elseif z_ij ~= i && z_ij ~= k && z_ij ~= 0
+                    if s_k(z_ij) > s_i(z_ij)
+                        action = 'update';
+                    end
+                elseif z_ij == 0
+                    action = 'leave';
+                end
+            end
+
+            % 执行对应行为
+            if strcmp(action, 'update')
+                if cbba_auv(i).auv_win(task_id) ~= z_kj || cbba_auv(i).big_bid(task_id) ~= y_kj
+                    cbba_auv(i).auv_win(task_id) = z_kj;
+                    cbba_auv(i).big_bid(task_id) = y_kj;
+                    % 查找 task_id 在 bundle 中的位置
+                    b_idx = find(cbba_auv(i).bundle == task_id);
+                    if ~isempty(b_idx)
+                        % 从该位置起后续所有任务全部释放
+                        for n = b_idx:length(cbba_auv(i).bundle)
+                            t_n = cbba_auv(i).bundle(n);
+                            if t_n == 0
+                                break;
+                            end
+                            % 清除bundle和path
+                            cbba_auv(i).path(cbba_auv(i).path == t_n) = [];
+                            cbba_auv(i).bundle(n) = [];
+                        end
+                    end
+                    updated = true;cbba_auv(i).temp_task = 0;
+                    last_updated = time;
+                    assignin('base','last_updated', last_updated);
+                end
+            elseif strcmp(action, 'reset')
+                % 清除本地与任务 task_id 相关的 bundle 和 path
+                cbba_auv(i).auv_win = zeros(1,num_tasks);
+                cbba_auv(i).big_bid = zeros(1,num_tasks);
+                cbba_auv(i).bundle = [];
+                cbba_auv(i).path = [];
+                updated = true;cbba_auv(i).temp_task = 0;
+                last_updated = time;
+                assignin('base','last_updated', last_updated);
+            elseif strcmp(action, 'leave')
+                % 什么也不做
+            end
+        end
+        % 更新时间戳
+        % cbba_auv(i).commu_time(k) = time;
+        % cbba_auv(k).commu_time(i) = time;
+    end
+end
+fprintf('conflic resolve at time:%.1f\n',time);
+
+%% 再算一次 time list和mile list
+for i = 1:num_auvs
+    [reward, ~, ~,time_list, mile_list] = ...
+    path_reward(cbba_auv(i), task_list, time_sheet, len_sheet, cbba_auv(i).path, num_auvs);
+    cbba_auv(i).path_reward = reward;
+    cbba_auv(i).time_list = time + time_list;
+    cbba_auv(i).mile_list = mile_list;
+end
+
+%% CBBA附加函数
+function new_path = insert_at(path, task_id, best_insert_pos)
+    % 在path中第pos位置插入task_id
+    % disp(best_insert_pos);
+    new_path = [path(1:best_insert_pos-1), task_id, path(best_insert_pos:end)];
+end
+
+function [reward, total_time, total_mile,time_list, mile_list] = path_reward(cbba_auv, task_list, time_sheet, len_sheet, path, num_auvs)
+    start = cbba_auv.id;
+    reward = 0;
+    total_time = 0;
+    total_mile=0;
+    time_list=[];
+    mile_list=[];
+    time_factor = 0.9; % reward时间衰减因子
+    
+    if ~isempty(path)
+        for idx = 1:length(path)
+            tid = path(idx);
+            entry = task_list(tid).id;
+            travel_time = time_sheet(start,entry);
+            len = len_sheet(start,entry);
+            start = entry + num_auvs;
+            exec_time = task_list(tid).duration(cbba_auv.id);
+            total_time = total_time + travel_time + exec_time;
+            time_list(1,end+1) = total_time; % 记录当前任务的到达时间
+            reward = reward + time_factor^(total_time/500) *  task_list(tid).value(cbba_auv.id);
+            total_mile = total_mile + len; 
+            mile_list(1,end+1) = total_mile; % 记录到达当前任务所行路程
+        end
+    else
+        reward = 0;
+        total_time = 0;
+        total_mile = 0;
+    end
+    cbba_auv.path_reward = reward;
+end
 
 
 end
-
-    %% 附加函数
-    function [TIME_SHEET, LEN_SHEET] = fetch_time_sheets()
-        if evalin('base','exist(''TIME_SHEET'',''var'')')
-            TIME_SHEET = evalin('base','TIME_SHEET');
-            LEN_SHEET  = evalin('base','LEN_SHEET');
-        else
-            TIME_SHEET = []; LEN_SHEET = [];
-        end
-    end
-    
-    function [cbba_auv, did_release] = handle_dead(cbba_auv, dead_id, num_tasks)
-        did_release = false;
-        for i=1:numel(cbba_auv)
-            mask = (cbba_auv(i).auv_win == dead_id);
-            if any(mask)
-                cbba_auv(i).auv_win(mask) = 0;
-                cbba_auv(i).big_bid(mask) = 0;
-                did_release = true;
-            end
-            if ~isempty(cbba_auv(i).bundle)
-                cbba_auv(i).bundle(ismember(cbba_auv(i).bundle, find(mask))) = [];
-            end
-            if ~isempty(cbba_auv(i).path)
-                cbba_auv(i).path(ismember(cbba_auv(i).path, find(mask))) = [];
-            end
-        end
-    
-        % —— 若“新 AUV 加入要全局重拍”，在加入时用下列替代：
-        % for i=1:numel(cbba_auv)
-        %     cbba_auv(i).auv_win(:)=0; cbba_auv(i).big_bid(:)=0;
-        %     cbba_auv(i).bundle=[]; cbba_auv(i).path=[];
-        % end
-        % did_release = true;
-    end
-    
-    function t_meet = predict_next_contact(i, j, t_now, R, cbba_auv, task_list, TIME_SHEET, LEN_SHEET, num_auvs)
-        if isempty(TIME_SHEET), t_meet = inf; return; end
-        [T_i, P_i] = build_timeline_for_agent(cbba_auv(i), task_list, TIME_SHEET, LEN_SHEET, num_auvs);
-        [T_j, P_j] = build_timeline_for_agent(cbba_auv(j), task_list, TIME_SHEET, LEN_SHEET, num_auvs);
-        if isempty(T_i), T_i = t_now; P_i = cbba_auv(i).state(7:9)'; end  %兼容空路径
-        if isempty(T_j), T_j = t_now; P_j = cbba_auv(j).state(7:9)'; end
-        T_i = T_i + t_now; T_j = T_j + t_now;    % 将相对时间变为绝对时间
-    
-        t_meet = inf; k_i=1; k_j=1; ti=t_now;               % 初始化区间扫描
-        Pi_prev = cbba_auv(i).state(7:9)'; ti_prev=t_now;   % i在上一路径点的位置
-        Pj_prev = cbba_auv(j).state(7:9)'; tj_prev=t_now;
-    
-        while true
-            ti_next = (k_i<=numel(T_i))*T_i(k_i) + (k_i>numel(T_i))*inf;    % 访问下一个路径点的时间
-            tj_next = (k_j<=numel(T_j))*T_j(k_j) + (k_j>numel(T_j))*inf;
-            t_end = min(ti_next, tj_next);                                  % 扫描区间终点
-            if ~isfinite(t_end) || t_end<=ti, break; end                    % 没有更多区间扫描则结束循环
-    
-            if isfinite(ti_next)
-                vi = (P_i(k_i,:)-Pi_prev)/max(1e-6, T_i(k_i)-ti_prev);
-            else, vi=[0 0 0]; end
-            % 上下都是：计算匀速速度
-            if isfinite(tj_next)
-                vj = (P_j(k_j,:)-Pj_prev)/max(1e-6, T_j(k_j)-tj_prev);
-            else, vj=[0 0 0]; end
-            
-            % r0：区间起点时刻两者的相对位置向量（i − j）
-            r0 = (Pi_prev + vi*max(0,ti-ti_prev)) - (Pj_prev + vj*max(0,ti-tj_prev));
-            v  = vi - vj;  % 相对速度
-            if norm(v)<1e-9
-                t_star=0; d_min=norm(r0);
-            else        % 距离最小点d_min在导数为0处
-                t_star = max(0, min(t_end-ti, -dot(r0,v)/(dot(v,v)+1e-12)));
-                d_min = norm(r0 + v*t_star);
-            end
-            if d_min <= R, t_meet = ti + t_star; return; end
-    
-            ti = t_end;  % 推进至下一个区间
-            if ti>=ti_next && isfinite(ti_next)
-                Pi_prev=P_i(k_i,:);
-                ti_prev=T_i(k_i); k_i=k_i+1;
-            end
-            if ti>=tj_next && isfinite(tj_next)
-                Pj_prev=P_j(k_j,:); tj_prev=T_j(k_j);
-                k_j=k_j+1; 
-            end
-        end
-    end
-    
-    function [T, P] = build_timeline_for_agent(auv, task_list, TIME_SHEET, LEN_SHEET, num_auvs)
-        % LEN_SHEET 预留
-        % T 到达各个路径点的累计时间   P记录各个路径点位置
-        T = []; P = [];
-        cur_row = auv.id;
-        t_acc = 0;
-        for idx = 1:numel(auv.path)
-            j = auv.path(idx);
-            dt = TIME_SHEET(cur_row, j);
-            if ~isfinite(dt) || dt<=0, continue; end
-            t_acc = t_acc + dt;
-            T(end+1) = t_acc;
-            P(end+1,:) = task_list(j).entry(:)';
-            exec_dt = task_list(j).duration(auv.id);
-            if isfinite(exec_dt) && exec_dt > 0
-                t_acc = t_acc + exec_dt;
-                T(end+1)    = t_acc;
-                P(end+1, :) = task_list(j).entry(:)';
-            end
-            cur_row = num_auvs + j;  % 下一段从该任务出口出发
-        end
-    end

@@ -7,9 +7,13 @@ for i = 1:num_auvs
     cbba_auv(i).auv_win = zeros(1,num_tasks);  % who win and take this task
     cbba_auv(i).bundle = [];   % bundle of this auv
     cbba_auv(i).path = [];     % path of this auv
+    cbba_auv(i).path_reward = 0; % reward of this path
     cbba_auv(i).temp_task = 0;
     commu = ones(1,num_auvs);
     cbba_auv(i).commu = commu;                  % cbba共识通讯邻接矩阵
     cbba_auv(i).commu_time = zeros(1,num_auvs); % cbba共识通讯时间戳
     cbba_auv(i).alive = true;                   % auv存活状态
+    % 记录数据所用
+    cbba_auv(i).time_list = [];
+    cbba_auv(i).mile_list = [];
 end

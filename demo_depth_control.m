@@ -9,14 +9,14 @@
 
     % 初始状态
     x = zeros(12,1);
-    x(1) = 1.382;     % 初始前进速度
+    x(1) = 1;     % 初始前进速度
     % spd_ref = 1.25;  % 期望速度
-    ui = [0; 0; 0; 0; 0; 1100];  % 固定推进器转速
+    ui = [0; 0; 0; 0; 0; 800];  % 固定推进器转速
 
     % 深度PID 参数
-    z_Kp = 2;
-    z_Ki = 0.05;
-    z_Kd = 2;
+    z_Kp = 0.1;
+    z_Ki = 0;
+    z_Kd = 0.5;
 
     % 初始化数据记录
     Z = zeros(1,N);
@@ -37,10 +37,10 @@
         % 深度控制
         if k*Ts < 50 
             z_ref = 0;
-            delta_b = -pid_controller('dep',z_ref, pitch, Ts, z_Kp, z_Ki, z_Kd); % PID 控制计算 delta_b（输出为弧度)
+            delta_b = pid_controller('dep',z_ref, z, Ts, z_Kp, z_Ki, z_Kd); % PID 控制计算 delta_b（输出为弧度)
         elseif 50<=k*Ts %&& k*Ts<200
-            z_ref = -10*pi/180;
-            delta_b = -pid_controller('dep',z_ref, pitch, Ts, z_Kp, z_Ki, z_Kd); % PID 控制计算 delta_b（输出为弧度）
+            z_ref = -10;
+            delta_b = pid_controller('dep',z_ref, z, Ts, z_Kp, z_Ki, z_Kd); % PID 控制计算 delta_b（输出为弧度）
         % else
         %     z_ref = 0;
         %     delta_b = pid_controller('dep',z_ref, z, Ts, z_Kp, z_Ki, z_Kd); % PID 控制计算 delta_b（输出为弧度）
@@ -68,33 +68,34 @@
 
     % ========== 画图 ==========
     figure();
-    set(gcf,'unit','normalize','position',[0.6 0.3 0.3 0.6])
-    subplot(1,1,1);
-    plot(t, Pitch, 'b', 'LineWidth', 2); hold on;
-    yline(rad2deg(z_ref), 'r--', 'LineWidth', 1.5);
+    set(gcf,'unit','normalize','position',[0.1 0.3 0.2 0.4])
+
+    subplot(3,1,1);
+    plot(t, Z, 'b', 'LineWidth', 2); hold on;
+    yline(z_ref, 'r--', 'LineWidth', 1.5);
     xlabel('time (s)');
     ylabel('pitch (rad)');
     title('Pitch PID Control');
     grid on;
 
-    % % 控制输入
-    % subplot(3,1,2);
-    % plot(t, U, 'm', 'LineWidth', 2);
-    % xlabel('time (s)');
-    % ylabel('Plane Angle \delta_b (deg)');
-    % title('Input：Plane Angle');
-    % grid on;
-    % 
-    % % 深度
-    % subplot(3,1,3);
-    % plot(t, Z, 'b', 'LineWidth', 2);
-    % % yline(spd_ref, 'r--', 'LineWidth', 1.5);
-    % xlabel('time (s)');
-    % ylabel('depth (m)');
-    % title('AUV depth');
-    % grid on;
+    % 控制输入
+    subplot(3,1,2);
+    plot(t, U, 'm', 'LineWidth', 2);
+    xlabel('time (s)');
+    ylabel('Plane Angle \delta_b (deg)');
+    title('Input：Plane Angle');
+    grid on;
+
+    % 深度
+    subplot(3,1,3);
+    plot(t, SPD, 'b', 'LineWidth', 2);
+    % yline(spd_ref, 'r--', 'LineWidth', 1.5);
+    xlabel('time (s)');
+    ylabel('speed');
+    title('AUV speed');
+    grid on;
 
     % ========== 控制性能指标 ==========
-    stepinfo_report(Pitch, t, rad2deg(z_ref));
+    stepinfo_report(Z, t, z_ref);
 % end
 

@@ -26,9 +26,9 @@ if init_time_sheet
         first = false;
     end
     for i = 1:num_auvs+num_tasks
-        % fprintf('time sheet %d\n',i);
+        fprintf('time sheet %d\n',i);
         for j = 1:num_tasks
-            fprintf('row: %d col: %d\n',i,j);
+            % fprintf('row: %d col: %d\n',i,j);
             if i <= num_auvs  % 从auv当前位置出发
                 start_pos = cbba_auv(i).state(7:9)';
                 arrive = task_list(j).entry;
@@ -67,8 +67,11 @@ for i = 1:num_auvs
             continue;  % 已在bundle中，跳过
         end
         if cbba_auv(i).auv_win(j) ~= 0 && cbba_auv(i).auv_win(j) ~= i
-            continue;  % 任务被别人赢得
+            continue;  % 任务被别人赢得，跳过
         end
+        if isfield(task_list, 'done') && task_list(j).done
+            continue;
+        end             % 任务已经完成
 
         % 在当前路径中尝试插入任务j，找出最高的bid位置
         cur_path = cbba_auv(i).path;
@@ -79,7 +82,7 @@ for i = 1:num_auvs
         % 遍历插入位置，标记任务J的最高出价和插入path的位置
         for pos = 0:length(cur_path)
             new_path = insert_at(cur_path, j, pos+1); % 插入后新的path
-            [reward, duration, mile] = path_reward(cbba_auv(i), task_list, time_sheet, len_sheet, new_path, num_auvs);
+            [reward, duration, mile, t_list, mile_list] = path_reward(cbba_auv(i), task_list, time_sheet, len_sheet, new_path, num_auvs);
             cbba_auv(i).mile = mile;
             % 对任务j的评估出价
             % bid = reward / (duration + 1e-5);  % 防止除0
@@ -193,7 +196,7 @@ for i = 1:num_auvs
            % ==== 新增：从 incoming 读取 k 在 i 处“可见”的视图（若无，则退回当前全局值） ====
             if incoming{i}.from.isKey(int32(k))
                 peer = incoming{i}.from(int32(k));
-                z_kj = peer.auv_win(task_id);    % k 的“已达达”观点
+                z_kj = peer.auv_win(task_id);    % k 的“已达”观点
                 y_kj = peer.big_bid(task_id);
             else
                 z_kj = cbba_auv(k).auv_win(task_id);  % 没收到就用当前值（等价于零延迟）
@@ -229,12 +232,12 @@ for i = 1:num_auvs
                     action = 'leave';
                 elseif z_ij == k
                     action = 'reset';
+                elseif z_ij == 0
+                    action = 'leave';
                 elseif z_ij ~= i && z_ij ~= k
                     if s_k(z_ij) > s_i(z_ij)
                         action = 'reset';
                     end
-                elseif z_ij == 0
-                    action = 'leave';
                 end
             elseif z_kj ~= i && z_kj ~= k && z_kj ~= 0  % k 认为 m 赢（m ≠ i,j）
                 m = z_kj;
@@ -253,6 +256,10 @@ for i = 1:num_auvs
                     if s_km > s_im
                         action = 'update';
                     end
+                elseif z_ij == 0
+                    if s_km > s_im
+                        action = 'update';
+                    end
                 elseif z_ij ~= i && z_ij ~= k && z_ij ~= m && z_ij ~= 0
                     n = z_ij;
                     s_kn = s_k(n);
@@ -264,22 +271,18 @@ for i = 1:num_auvs
                     elseif s_kn > s_in && s_im > s_km
                         action = 'reset';
                     end
-                elseif z_ij == 0
-                    if s_km > s_im
-                        action = 'update';
-                    end
                 end
             elseif z_kj == 0                % k 认为 该任务无人认领
                 if z_ij == i
                     action = 'leave';
                 elseif z_ij == k
                     action = 'update';
+                elseif z_ij == 0
+                    action = 'leave';
                 elseif z_ij ~= i && z_ij ~= k && z_ij ~= 0
                     if s_k(z_ij) > s_i(z_ij)
                         action = 'update';
                     end
-                elseif z_ij == 0
-                    action = 'leave';
                 end
             end
 
@@ -292,11 +295,11 @@ for i = 1:num_auvs
                     b_idx = find(cbba_auv(i).bundle == task_id);
                     if ~isempty(b_idx)
                         % 从该位置起后续所有任务全部释放
-                        for n = b_idx:length(cbba_auv(i).bundle)
+                        for n = numel(cbba_auv(i).bundle):-1:b_idx
                             t_n = cbba_auv(i).bundle(n);
-                            if t_n == 0
-                                break;
-                            end
+                            % if t_n == []
+                            %     break;
+                            % end
                             % 清除bundle和path
                             cbba_auv(i).path(cbba_auv(i).path == t_n) = [];
                             cbba_auv(i).bundle(n) = [];
@@ -320,12 +323,20 @@ for i = 1:num_auvs
             end
         end
         % 更新时间戳
-        cbba_auv(i).commu_time(k) = time;
-        cbba_auv(k).commu_time(i) = time;
+        % cbba_auv(i).commu_time(k) = time;
+        % cbba_auv(k).commu_time(i) = time;
     end
 end
 fprintf('conflic resolve at time:%.1f\n',time);
 
+%% 再算一次 time list和mile list
+for i = 1:num_auvs
+    [reward, ~, ~,time_list, mile_list] = ...
+    path_reward(cbba_auv(i), task_list, time_sheet, len_sheet, cbba_auv(i).path, num_auvs);
+    cbba_auv(i).path_reward = reward;
+    cbba_auv(i).time_list = time + time_list;
+    cbba_auv(i).mile_list = mile_list;
+end
 
 %% CBBA附加函数
 function new_path = insert_at(path, task_id, best_insert_pos)
@@ -334,11 +345,13 @@ function new_path = insert_at(path, task_id, best_insert_pos)
     new_path = [path(1:best_insert_pos-1), task_id, path(best_insert_pos:end)];
 end
 
-function [reward, total_time, total_mile] = path_reward(cbba_auv, task_list, time_sheet, len_sheet, path, num_auvs)
+function [reward, total_time, total_mile,time_list, mile_list] = path_reward(cbba_auv, task_list, time_sheet, len_sheet, path, num_auvs)
     start = cbba_auv.id;
     reward = 0;
     total_time = 0;
     total_mile=0;
+    time_list=[];
+    mile_list=[];
     time_factor = 0.9; % reward时间衰减因子
     
     if ~isempty(path)
@@ -350,13 +363,18 @@ function [reward, total_time, total_mile] = path_reward(cbba_auv, task_list, tim
             start = entry + num_auvs;
             exec_time = task_list(tid).duration(cbba_auv.id);
             total_time = total_time + travel_time + exec_time;
+            time_list(1,end+1) = total_time; % 记录当前任务的到达时间
             reward = reward + time_factor^(total_time/500) *  task_list(tid).value(cbba_auv.id);
-            total_mile = total_mile + len;
+            total_mile = total_mile + len; 
+            mile_list(1,end+1) = total_mile; % 记录到达当前任务所行路程
         end
     else
         reward = 0;
         total_time = 0;
         total_mile = 0;
     end
+    cbba_auv.path_reward = reward;
 end
+
+
 end
