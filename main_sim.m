@@ -1,7 +1,7 @@
 
 % seed_list=[23,11,33,579,57,786,78,85,99,114514];
 % for aaa = 1:10
-%% 仿真主程序
+%% 仿真主程序 main simulation programme
 clear all;
 close();
 clear cbba_orig traj hb_record gantt_record
@@ -9,26 +9,27 @@ seed = 34;
 S.env = RandStream('Threefry','Seed',seed + 11);
 S.fail = RandStream('Threefry','Seed',seed + 11); 
 
-%% 初始化 生成环境
-dt = 0.1;           % 仿真步长
-count = 0;          % 仿真轮次  
-num_tasks = 6;      % 任务总数
-num_obs = 200;      % 障碍物总数
-num_auvs = 3;       % auv总数
-fail_num = 1;      % 故障auv数量
+%% 初始化 生成环境 Initialize generate env
+dt = 0.1;           % 仿真步长 sim step time
+count = 0;          % 仿真轮次  num of sim round
+num_tasks = 6;      % 任务总数 number of tasks
+num_obs = 200;      % 障碍物总数number of obstacle
+num_auvs = 3;       % auv总数   number of AUV
+fail_num = 1;      % 故障auv数量 number of failure AUV
 
 entry_exit_split = 0;   % task出入口是否分离
-% 环境初始化
+% 环境初始化  initialize environment
 [task_list, auv_list, obstacle_list] = generate_env(num_tasks, num_obs, num_auvs, S, fail_num, entry_exit_split);
-going(1:num_auvs) = true;   % auv是否移动
-anime_switch = 1;        % 是否渲染动画
-temp_task_start_time = zeros(1,num_auvs);   % 记录停留原地执行任务的开始时间
-executing(1:num_auvs) = false;              % 停留原地执行任务的标志
-init_time_sheet = true;                     % cbba第一次运行时计算所有路径的耗时，节省计算资源
+going(1:num_auvs) = true;   % auv是否移动  mark of moving
+anime_switch = 1;        % 是否渲染动画   anime switch
+temp_task_start_time = zeros(1,num_auvs);   % 记录停留原地执行任务的开始时间  mark the mission start time
+executing(1:num_auvs) = false;              % 停留原地执行任务的标志 mark of executing task
+init_time_sheet = true;                     % cbba第一次运行时计算所有路径的耗时，节省计算资源 
+                                            % mark of first time cbba, calculate all path
 
-[cbba_auv] = init_cbba(auv_list, num_tasks);  % cbba模块初始化
-updated = true;     % cbba是否运行的标志
-last_updated = 0;   % cbba上一次的更新时间
+[cbba_auv] = init_cbba(auv_list, num_tasks);  % cbba模块初始化 initalize cbba structure
+updated = true;     % cbba是否运行的标志 mark of running cbba
+last_updated = 0;   % cbba上一次的更新时间 last update time of cbba
 
 
 %% PID initial
@@ -40,6 +41,7 @@ pitch_kp = 0.1;  % 深度控制 0.1  pitch控制2
 pitch_ki = 0;
 pitch_kd = 0.5;  % 深度控制 0.5 pitch控制2
 % 为每个 AUV 生成唯一的控制器 ID，并“注册/重置”一次
+% Generate a unique controller ID for each AUV and "register/reset" it once
 yaw_ids   = arrayfun(@(i) sprintf('yaw_%d',   i), 1:num_auvs, 'uni', false);
 pitch_ids = arrayfun(@(i) sprintf('pitch_%d', i), 1:num_auvs, 'uni', false);
 for i = 1:num_auvs
@@ -48,34 +50,39 @@ for i = 1:num_auvs
 end
 pid_vector = [yaw_kp, yaw_ki, yaw_kd, pitch_kp, pitch_ki, pitch_kd, dt];
 
-%% 失控/心跳检测初始化
+%% 失控/心跳检测初始化 Failure/heartbeat detection initialization
 hb = struct();
 pos = zeros(num_auvs,3);
 dis = zeros(num_auvs,3);
-% 常量
-hb.R_comm      = 1000;    % m
-hb.c_sound     = 1500;    % m/s
-hb.T_HB        = 5;       % 心跳周期 (s)
+% 常量 constant
+hb.R_comm      = 1000;    % m     commu range
+hb.c_sound     = 1500;    % m/s   speed of sound
+hb.T_HB        = 5;       % 心跳周期 (s)  heartbeat period
 hb.tau_soft    = hb.R_comm/hb.c_sound + 2*hb.T_HB + 1.0;  % 小失效容忍 ≈ 0.667s + 1s
 hb.tau_big_pad = 30.0;    % 大失效工程容差 (s)
 hb.dt_cap_min  = 30.0;    % 预测失败兜底 (s)
 
 % 延迟桶（仅心跳/上下线消息；不放CBBA信息）
+% Delay bucket (only heartbeat/online and offline messages; no CBBA information)
 hb.bucket = struct('type',{},'src',{},'dst',{},'t_emit',{},'t_arrive',{},'heard_row',{});
 
-% 成对状态机（i观察j）：0=CONNECTED, 1=SOFT_LOSS(大失效倒计时), 2=DEAD
+% （i观察j）：0=CONNECTED, 1=SOFT_LOSS(大失效倒计时), 2=DEAD
 hb.link_state   = zeros(num_auvs);
-hb.last_rx      = zeros(num_auvs);   % i<-j 最近一次收到心跳的时间
+hb.last_rx      = zeros(num_auvs);   % i<-j last time receive heartbeat
 hb.t_soft_start = -inf(num_auvs);
 hb.T_deadline   =  inf(num_auvs);
 
-%% 数据记录的初始化
-hb_record = zeros(1,3); % 失效对象；小失效时间；大失效时间
+%% 数据记录的初始化 Initialization of data records
+% 失效对象；小失效时间；大失效时间
+% Failure AUV; soft loss time; dead time
+hb_record = zeros(1,3); 
+% CBBA allocation
 % 执行者，task id，开始时间，结束时间
+% Executor, task id, start time, end time
 gantt_record = struct('auv',{},'task_id',{},'t_start',{},'t_end',{},'assign_round',{});
 alloc_round = 0;
 
-%% 初始化绘图
+%% 初始化绘图 Initial plot
 r = 15;
 [X, Y, Z] = sphere(20);
 if anime_switch
@@ -86,14 +93,14 @@ if anime_switch
     xlabel('X'); ylabel('Y'); zlabel('Z');
     title('AUV APF Navigation');
 
-    % 绘制障碍物
+    % 绘制障碍物 plot obstacle
     for i = 1:num_obs
         surf(obstacle_list(i).radius*X+obstacle_list(i).pos(1),...
             obstacle_list(i).radius*Y+obstacle_list(i).pos(2),...
             obstacle_list(i).radius*Z+obstacle_list(i).pos(3),...
             'FaceColor','r','EdgeColor','none','FaceAlpha',0.5);
     end
-    % 绘制目标点
+    % 绘制目标点 plot tasks
     for i = 1:num_tasks
         entry = task_list(i).entry;
         exit = task_list(i).exit;
@@ -102,7 +109,7 @@ if anime_switch
         text(entry(1), entry(2), entry(3)+5*r, sprintf('T%d', i), 'Color','k', 'FontSize',10, 'FontWeight','bold');
         hold on;
     end
-    % 初始化AUV与轨迹绘制
+    % 初始化AUV与轨迹绘制 Initialize AUV and their trajectory
     auvPlot = gobjects(num_auvs,1);
     headingLine = gobjects(num_auvs,1); 
     trajPlot = gobjects(num_auvs,1);
@@ -121,8 +128,9 @@ end
 while any(going)
     count = count + 1;
     time = count * dt;
-%% 移动迭代
+%% 移动迭代 move iteration
 % 得到APF指向 模型仿真移动 无方案and执行任务时停止移动
+% Get APF pointing model simulation movement No solution and stop moving when executing the task
     for i = 1:num_auvs
         if ~going(i)
             continue;
@@ -131,32 +139,32 @@ while any(going)
         pos = x(7:9)';
         pitch = x(11);
         yaw = x(12);
-        if ~updated   % 没有在更新任务
-            if cbba_auv(i).temp_task == 0  %初始化变量当前任务
+        if ~updated   % 没有在更新任务 No CBBA update
+            if cbba_auv(i).temp_task == 0  %初始化当前任务变量 Initialize current task
                 cbba_auv(i).temp_task = cbba_auv(i).temp_task + 1;
             end
 
-            if cbba_auv(i).temp_task > length(cbba_auv(i).path)   %完成全部任务则停车
+            if cbba_auv(i).temp_task > length(cbba_auv(i).path)   %完成全部任务则停车Stop after all tasks done
                 ui = zeros(1,6);
-                going(i) = false;  % 这台auv结束行动
-                tid = cbba_auv(i).path(max(1,cbba_auv(i).temp_task - 1));   % 当前执行的任务 id
+                going(i) = false;  % 这台auv结束行动 this auv stops
+                tid = cbba_auv(i).path(max(1,cbba_auv(i).temp_task - 1));   % 当前执行的任务 id current task id
                 task_list(tid).done = true;
                 task_list(tid).done_reward = 0.9^(time/500) *  task_list(tid).value(i);
             else
                 temp_task = cbba_auv(i).path(cbba_auv(i).temp_task);
-                goal = task_list(find(vertcat(task_list.id) == temp_task, 1)).entry; %找到当前任务的位置
+                goal = task_list(find(vertcat(task_list.id) == temp_task, 1)).entry; %找到当前任务的位置 Find the location of the current task
                 goal_dist = norm(pos - goal);
-                if goal_dist < 3            %检测到达位置
+                if goal_dist < 3    % 检测到达任务位置 Arrival at task location
                     % if ~executing(i)
-                    cbba_auv(i).temp_task = cbba_auv(i).temp_task + 1;% 切换下一个任务
-                    temp_task_start_time(i) = time; % 记录执行开始时间
+                    cbba_auv(i).temp_task = cbba_auv(i).temp_task + 1;% 切换下一个任务 switch to next task
+                    temp_task_start_time(i) = time; % 记录执行开始时间 Record task start time
                     executing(i) = true;
                     % end
                 else
                     ui = APF(x, goal, obstacle_list, yaw_ids{i}, pitch_ids{i} , pid_vector);
-                    tid = cbba_auv(i).path(max(1,cbba_auv(i).temp_task - 1));              % 当前执行的任务 id
-                    if time - temp_task_start_time(i) >= task_list(tid).duration(i) % 任务执行时间已经完成
-                        % 登记已经完成的任务
+                    tid = cbba_auv(i).path(max(1,cbba_auv(i).temp_task - 1));       % 当前执行的任务 id current task id
+                    if time - temp_task_start_time(i) >= task_list(tid).duration(i) % 任务执行时间已经完成 task executed
+                        % 登记已经完成的任务 Register completed tasks
                         if ~task_list(tid).done && executing(i)
                             task_list(tid).done = true;
                             task_list(tid).done_reward = 0.9^(time/500) *  task_list(tid).value(i);
@@ -168,7 +176,7 @@ while any(going)
         else
             ui = zeros(1,6);
         end
-        % 状态更新
+        % 状态更新 state update
         if executing(i)
             xdot = zeros(12,1);
         else
@@ -179,7 +187,7 @@ while any(going)
         cbba_auv(i).state = x;
     end
 
-    %% 心跳检测：发送
+    %% 心跳检测：发送 Heartbeat inspection: send
     for ii=1:num_auvs, pos(ii,:) = cbba_auv(ii).state(7:9)'; end
     for i = 1:num_auvs
         for j = 1:num_auvs
@@ -202,7 +210,7 @@ while any(going)
             end
         end
     end
-    %% 心跳检测：递送
+    %% 心跳检测：递送 Heartbeat inspection: receive
    if ~isempty(hb.bucket)
         keep = true(1,numel(hb.bucket));
         for m = 1:numel(hb.bucket)
@@ -212,24 +220,26 @@ while any(going)
                 heard_row = hb.bucket(m).heard_row;
                 if strcmp(hb.bucket(m).type,'HEARTBEAT')
                     hb.last_rx(dst,src) = time;                 % i<-j
-                    cbba_auv(dst).commu_time(src) = time;       % 同步到你已有字段
-                    heard_row(dst) = 0; heard_row(src) = 0;     % 将收到的最后通信表里的收发信人置零
-                    hb.last_rx(dst,:) = max(hb.last_rx(dst,:), heard_row);  %更新为最新的收信时间
+                    cbba_auv(dst).commu_time(src) = time;       % 同步到已有字段 Synchronize to existing fields
+                    % 将收到的最后通信表里的收发信人置零 
+                    % Set the sender and receiver in the last commu table to zero
+                    heard_row(dst) = 0; heard_row(src) = 0;     
+                    hb.last_rx(dst,:) = max(hb.last_rx(dst,:), heard_row);  % 更新为最新的收信时间 update the lasest commu time
                 end
                 keep(m) = false;
             end
         end
         hb.bucket = hb.bucket(keep);
    end
-   %% 小/大失效状态机（仅 DEAD 触发重分配)
-    for i = 1:num_auvs      % i是收信人,本地auv
+   %% 小/大失效状态机（仅 DEAD 触发重分配) soft/firm dead state machine
+    for i = 1:num_auvs      % i是收信人,本地auv i is the receiver, local auv
         if ~cbba_auv(i).alive, continue; end % dead  不再更新
-        for j = 1:num_auvs  % j是发信人
+        for j = 1:num_auvs  % j是发信人 j is the sender
             if i==j, continue; end
     
             dt_no_rx = time - hb.last_rx(i,j);
     
-            % 连通
+            % 连通 communicable
             if dt_no_rx <= hb.tau_soft
                 hb.link_state(i,j) = 0;  % CONNECTED
                 hb.t_soft_start(i,j) = inf;
@@ -237,12 +247,12 @@ while any(going)
                 continue; 
             end
     
-            % 刚进入小失效：启动大失效倒计时
+            % 刚进入小失效：启动大失效倒计时 soft loss start: dead count down
             if hb.link_state(i,j) == 0
                 hb.link_state(i,j)   = 1;             % SOFT_LOSS
                 hb.t_soft_start(i,j) = time;
     
-                % 预测下次进入通信半径时间
+                % 预测下次进入通信半径时间 estimate next commu time
                 if dis(i,j)<hb.R_comm
                     t_meet = 0;
                 else
@@ -253,31 +263,31 @@ while any(going)
                 % if ~isfinite(t_meet), t_meet = time + hb.dt_cap_min; end
                 %  永远无法重新通讯那就无法通，不要为了兜底加入一个固定值
     
-                % 大失效截止：预计相遇剩余 + 30s
+                % 大失效截止：预计相遇剩余 + 30s Dead Deadline: Estimated Next Commu + 30s
                 hb.T_deadline(i,j) = time + max(0, t_meet - time) + hb.tau_big_pad;
-                % 记录小失效触发
+                % 记录小失效触发 record soft loss triggered
                 hb_record(end+1,:) = [j,time,0];
             end
     
-            % 大失效触发
+            % 大失效触发 Dead triggered
             if hb.link_state(i,j) == 1 && time >= hb.T_deadline(i,j)
                 hb.link_state(i,j) = 2;   % DEAD
                 [cbba_auv, did_release] = handle_dead(cbba_auv, j, num_tasks);
                 if did_release
-                    updated = true;       % 触发下一轮 CBBA
+                    updated = true;       % 触发下一轮 CBBA trigger next CBBA
                     init_time_sheet = true;
-                    % 记录小失效触发
+                    % 记录大失效触发 record Dead
                     hb_record(end+1,:) = [j,0,time];
                 end
             end
         end
     end
-    %% （是否）启动task allocation
+    %% （if）启动task allocation
     if updated
         [cbba_auv,updated,init_time_sheet]= cbba_orig(cbba_auv,task_list, obstacle_list, ...
             time, pid_vector, updated, last_updated, init_time_sheet);
         if ~updated
-            % 完成分配后记录方案
+            % 完成分配后记录方案 Record the allocation after CBBA finish
             alloc_round = alloc_round + 1;
             for n = 1:num_auvs
                 if isempty(cbba_auv(n).path), continue; end 
@@ -298,22 +308,22 @@ while any(going)
         end
     end
     
-    %% 随机auv失效
+    %% 随机auv失效 Random AUV failure
     for idx = 1:num_auvs
         if cbba_auv(idx).alive && time >= cbba_auv(idx).fail_time
-            cbba_auv(idx).alive = false;   % 停止发心跳
+            cbba_auv(idx).alive = false;   % 停止发心跳 Stop Heartbeat
             going(idx) = false;            % 也可改成漂移，这里直接停
             fprintf('AUV %d failed at t=%.1f s\n', idx, time);
         end
     end
 
-    %% 更新仿真 绘制动画
+    %% 更新仿真 绘制动画 Update Simulation Draw Animation
     for i = 1:num_auvs
         if ~going(i)
             continue;
         end
         x = cbba_auv(i).state;
-        if mod(count,200) == 0 && anime_switch
+        if mod(count,200) == 0 && anime_switch  % speed up the anima
             % 朝向单位向量（以 body x 方向为基础）
             dir_len = 30;  % 线段长度
             dx = dir_len * cos(pitch) * cos(yaw);
@@ -344,13 +354,13 @@ while any(going)
     end
 
 end
-%% 事后统计数据
-% 分析心跳机制
-% [summary_hb, perAUV_hb] = analyze_hb(hb_record, cbba_auv,seed);
+%% 事后统计数据 statistics after simulation
+% 分析心跳机制 Analyze heartbeat mechanism
+[summary_hb, perAUV_hb] = analyze_hb(hb_record, cbba_auv,seed);
 % 画gunchat
 plot_cbba_timeline(gantt_record, cbba_auv, seed);
 % 分析reward recover 情况
-% reward is the total reward of the whole 分配方案
+% reward is the total reward of the whole allocation分配方案
 reward = 0;
 for task_id = 1:num_tasks
     reward = reward + task_list(task_id).done_reward;
@@ -359,9 +369,9 @@ done = sum(vertcat(task_list.done));
 reward_record = struct('seed',seed,'auv_num', num_auvs, ...
     'fail_num',fail_num, 'task_num', num_tasks,'assign_round',alloc_round, ...
     'task_done', done, 'reward',reward);
-% append_reward_table(reward_record, seed);
+append_reward_table(reward_record, seed);
 % end
-    %% 附加函数
+    %% 附加函数 function
     function [TIME_SHEET, LEN_SHEET] = fetch_time_sheets()
         if evalin('base','exist(''TIME_SHEET'',''var'')')
             TIME_SHEET = evalin('base','TIME_SHEET');
